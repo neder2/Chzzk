@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Better Chzzk 설정</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <main class="options-page">
+        <header class="hero">
+            <div class="brand-mark" aria-hidden="true">C</div>
+            <div>
+                <p class="eyebrow">Better Chzzk</p>
+                <h1>Better Chzzk</h1>
+                <p class="subtitle">치지직 자동 화질, 다시보기 스킵/검색, 방송 목록 필터, 채널 방송 시간, 안내 팝업 정리를 기능별로 조절합니다.</p>
+            </div>
+            <span id="notice" class="status-pill" aria-live="polite">불러오는 중</span>
+        </header>
+
+        <form id="optionsForm" class="settings-form" novalidate>
+            <section class="settings-card">
+                <div class="section-heading">
+                    <h2>재생 기본값</h2>
+                    <p>라이브와 다시보기 플레이어 화질을 1080p로 자동 복구합니다.</p>
+                </div>
+
+                <label class="toggle-row">
+                    <span>
+                        <strong>자동 화질 복구</strong>
+                        <small>라이브와 다시보기 입장 시 1080p로 맞추고 화질이 내려가면 다시 복구합니다.</small>
+                    </span>
+                    <input type="checkbox" data-option="autoQualityEnabled">
+                </label>
+            </section>
+
+            <section class="settings-card">
+                <div class="section-heading">
+                    <h2>시청 기록</h2>
+                    <p>라이브 재생 시간을 이 브라우저에 저장하고, 월별 달력과 라이브별 누적 시간을 확인합니다.</p>
+                </div>
+
+                <label class="toggle-row">
+                    <span><strong>라이브 시청 기록 저장</strong><small>라이브 재생 중인 시간만 로컬 저장소에 기록합니다.</small></span>
+                    <input type="checkbox" data-option="liveWatchHistoryEnabled">
+                </label>
+
+                <div class="inline-action-row">
+                    <a class="secondary-button" href="history.html" target="_blank" rel="noopener">시청 기록 보기</a>
+                </div>
+                <p class="setting-note">기록은 Chrome 동기화가 아닌 이 브라우저의 로컬 저장소에만 저장됩니다.</p>
+            </section>
+
+            <section class="settings-card">
+                <div class="section-heading">
+                    <h2>다시보기/라이브 조작</h2>
+                    <p>방향키 이동, 플레이어 안의 초 단위 버튼, 라이브 재생 복원을 조절합니다.</p>
+                </div>
+
+                <label class="toggle-row">
+                    <span><strong>스킵 기능</strong><small>다시보기와 라이브 타임머신에서 시간 이동 도구를 사용합니다.</small></span>
+                    <input type="checkbox" data-option="skipControlEnabled">
+                </label>
+                <label class="toggle-row" data-depends-on="skipControlEnabled">
+                    <span><strong>방향키 스킵</strong><small>왼쪽/오른쪽 방향키로 이동합니다.</small></span>
+                    <input type="checkbox" data-option="skipKeyboardEnabled">
+                </label>
+                <label class="toggle-row" data-depends-on="skipControlEnabled">
+                    <span><strong>플레이어 버튼</strong><small>시간 표시 옆에 초 단위 버튼을 붙입니다.</small></span>
+                    <input type="checkbox" data-option="skipPillEnabled">
+                </label>
+                <label class="toggle-row" data-depends-on="skipControlEnabled skipPillEnabled">
+                    <span><strong>라이브 플레이어 버튼</strong><small>라이브와 타임머신에서도 초 단위 스킵 버튼을 표시합니다.</small></span>
+                    <input type="checkbox" data-option="skipLivePillEnabled">
+                </label>
+                <label class="toggle-row" data-depends-on="skipControlEnabled">
+                    <span><strong>일시정지 후 재생 위치</strong><small>켜면 멈춘 위치에서 이어 보고, 끄면 치지직 기본 동작대로 실시간 위치로 이동합니다.</small></span>
+                    <input type="checkbox" data-option="skipLivePauseResumeEnabled">
+                </label>
+                <label class="toggle-row">
+                    <span><strong>다시보기 방송시각</strong><small>방송 시작 시간과 현재 재생 위치를 더해 해당 장면의 실제 방송 시각을 표시합니다.</small></span>
+                    <input type="checkbox" data-option="vodBroadcastClockEnabled">
+                </label>
+                <label class="toggle-row">
+                    <span><strong>타임머신 지연 표시</strong><small>타임머신 시청 중 실시간 대비 지연 시간을 표시합니다.</small></span>
+                    <input type="checkbox" data-option="timeMachineLagLabelEnabled">
+                </label>
+
+                <details class="advanced-settings">
+                    <summary>스킵 수치 설정</summary>
+                    <div class="number-grid" data-depends-on="skipControlEnabled">
+                        <label><span>기본 스킵</span><input type="number" min="1" max="600" step="1" data-option="skipSeconds"><em>초</em></label>
+                        <label><span>휠 기본</span><input type="number" min="1" max="60" step="1" data-option="skipWheelStep"><em>초</em></label>
+                        <label><span>Shift+휠</span><input type="number" min="1" max="300" step="1" data-option="skipWheelShiftStep"><em>초</em></label>
+                        <label><span>Alt+휠</span><input type="number" min="1" max="600" step="1" data-option="skipWheelAltStep"><em>초</em></label>
+                    </div>
+                </details>
+            </section>
+
+            <section class="settings-card">
+                <div class="section-heading">
+                    <h2>안내 팝업</h2>
+                    <p>시청 중 뜨는 광고 차단 관련 안내 팝업을 정리합니다.</p>
+                </div>
+
+                <label class="toggle-row">
+                    <span><strong>팝업 숨김</strong><small>해당 안내 팝업을 닫고 화면에서 숨깁니다.</small></span>
+                    <input type="checkbox" data-option="adblockPopupEnabled">
+                </label>
+            </section>
+
+            <section class="settings-card">
+                <div class="section-heading">
+                    <h2>채널 방송 시간</h2>
+                    <p>다시보기의 방송 시작/종료 시간을 기준으로 최근 평균과 월별 방송일을 표시합니다.</p>
+                </div>
+
+                <label class="toggle-row">
+                    <span><strong>방송 시간 스티커</strong><small>채널 액션 영역에 최근 평균 방송 시간을 붙입니다.</small></span>
+                    <input type="checkbox" data-option="monthlyBroadcastTimeEnabled">
+                </label>
+                <label class="toggle-row" data-depends-on="monthlyBroadcastTimeEnabled">
+                    <span><strong>월간 달력</strong><small>시작 날짜 기준으로 색을 칠하고, 날짜 호버 시 시작/종료/진행 시간을 보여줍니다.</small></span>
+                    <input type="checkbox" data-option="monthlyBroadcastTimeCalendarEnabled">
+                </label>
+
+                <details class="advanced-settings">
+                    <summary>방송 시간 수치 설정</summary>
+                    <div class="number-grid" data-depends-on="monthlyBroadcastTimeEnabled">
+                        <label><span>평균 기간</span><input type="number" min="1" max="365" step="1" data-option="monthlyBroadcastTimeWindowDays"><em>일</em></label>
+                        <label><span>평균 조회 상한</span><input type="number" min="1" max="200" step="1" data-option="monthlyBroadcastTimeMaxPages"><em>쪽</em></label>
+                        <label data-depends-on="monthlyBroadcastTimeEnabled monthlyBroadcastTimeCalendarEnabled"><span>달력 조회 상한</span><input type="number" min="1" max="300" step="10" data-option="monthlyBroadcastTimeMaxCalendarPages"><em>쪽</em></label>
+                    </div>
+                    <p class="setting-note">달력은 읽은 페이지를 잠시 캐시하며, 조회 상한을 낮출수록 채널 페이지 반응이 빨라집니다.</p>
+                </details>
+            </section>
+
+            <section class="settings-card">
+                <div class="section-heading">
+                    <h2>다시보기 검색</h2>
+                    <p>채널 다시보기 탭에서 제목 검색을 보강하고, 필요하면 댓글 일부까지 확인합니다.</p>
+                </div>
+
+                <label class="toggle-row">
+                    <span><strong>다시보기 검색</strong><small>채널 다시보기 목록에 검색창을 추가합니다.</small></span>
+                    <input type="checkbox" data-option="videoSearchEnabled">
+                </label>
+                <label class="toggle-row" data-depends-on="videoSearchEnabled">
+                    <span><strong>댓글 검색</strong><small>제목 검색 결과가 부족할 때 댓글을 순차 조회합니다.</small></span>
+                    <input type="checkbox" data-option="videoSearchCommentEnabled">
+                </label>
+
+                <details class="advanced-settings">
+                    <summary>검색 수치 설정</summary>
+                    <div class="number-grid" data-depends-on="videoSearchEnabled">
+                        <label><span>영상 조회 페이지</span><input type="number" min="1" max="200" step="1" data-option="videoSearchMaxPages"><em>쪽</em></label>
+                        <label><span>한 번에 표시</span><input type="number" min="10" max="300" step="10" data-option="videoSearchRenderBatchSize"><em>개</em></label>
+                        <label data-depends-on="videoSearchEnabled videoSearchCommentEnabled"><span>댓글 검색 지연</span><input type="number" min="0" max="5000" step="100" data-option="videoSearchCommentDelayMs"><em>ms</em></label>
+                        <label data-depends-on="videoSearchEnabled videoSearchCommentEnabled"><span>댓글 조회 영상</span><input type="number" min="1" max="200" step="10" data-option="videoSearchCommentMaxVideos"><em>개</em></label>
+                        <label data-depends-on="videoSearchEnabled videoSearchCommentEnabled"><span>영상당 댓글 페이지</span><input type="number" min="1" max="3" step="1" data-option="videoSearchCommentMaxPagesPerVideo"><em>쪽</em></label>
+                    </div>
+                    <p class="setting-note">댓글 검색은 요청량이 커서 지연값과 영상 수를 낮출수록 페이지 반응이 빨라집니다.</p>
+                </details>
+            </section>
+
+            <section class="settings-card">
+                <div class="section-heading">
+                    <h2>방송 목록 필터</h2>
+                    <p>전체 방송과 카테고리 목록의 검색, 시청자/팔로워 필터, 배지를 조절합니다.</p>
+                </div>
+
+                <label class="toggle-row">
+                    <span><strong>방송 목록 도구</strong><small>검색창과 필터 메뉴를 추가합니다.</small></span>
+                    <input type="checkbox" data-option="categoryToolsEnabled">
+                </label>
+                <label class="toggle-row" data-depends-on="categoryToolsEnabled">
+                    <span><strong>전체 방송 태그 검색 숨김</strong><small>전체 방송 목록에서 기본 태그 검색창을 숨기고 확장 검색/필터만 표시합니다.</small></span>
+                    <input type="checkbox" data-option="categoryToolsHideGlobalTagSearch">
+                </label>
+                <label class="toggle-row" data-depends-on="categoryToolsEnabled">
+                    <span><strong>팔로워 수 스티커</strong><small>프로필 아래에 팔로워 수를 작게 표시합니다.</small></span>
+                    <input type="checkbox" data-option="categoryToolsFollowerBadgesEnabled">
+                </label>
+                <label class="toggle-row" data-depends-on="categoryToolsEnabled">
+                    <span><strong>진행 시간 호버</strong><small>썸네일에 마우스를 올리면 방송 진행 시간을 보여줍니다.</small></span>
+                    <input type="checkbox" data-option="categoryToolsLiveElapsedEnabled">
+                </label>
+
+                <details class="advanced-settings">
+                    <summary>필터 버튼 기준값</summary>
+                    <div class="number-grid" data-depends-on="categoryToolsEnabled">
+                        <label><span>팔로워 버튼 1</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsFollowerFilterPreset1"><em>명</em></label>
+                        <label><span>팔로워 버튼 2</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsFollowerFilterPreset2"><em>명</em></label>
+                        <label><span>팔로워 버튼 3</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsFollowerFilterPreset3"><em>명</em></label>
+                        <label><span>팔로워 버튼 4</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsFollowerFilterPreset4"><em>명</em></label>
+                        <label><span>팔로워 버튼 5</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsFollowerFilterPreset5"><em>명</em></label>
+                        <label><span>팔로워 버튼 6</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsFollowerFilterPreset6"><em>명</em></label>
+                        <label><span>시청자/조회수 1</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsViewFilterPreset1"><em>명/회</em></label>
+                        <label><span>시청자/조회수 2</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsViewFilterPreset2"><em>명/회</em></label>
+                        <label><span>시청자/조회수 3</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsViewFilterPreset3"><em>명/회</em></label>
+                        <label><span>시청자/조회수 4</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsViewFilterPreset4"><em>명/회</em></label>
+                        <label><span>시청자/조회수 5</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsViewFilterPreset5"><em>명/회</em></label>
+                        <label><span>시청자/조회수 6</span><input type="number" min="1" max="10000000" step="1" data-option="categoryToolsViewFilterPreset6"><em>명/회</em></label>
+                    </div>
+                    <p class="setting-note">각 필터의 1번 값은 “이하” 버튼 기준이고, 이후 값은 구간 버튼의 경계값으로 사용됩니다.</p>
+                </details>
+
+                <details class="advanced-settings">
+                    <summary>목록 조회 수치 설정</summary>
+                    <div class="number-grid" data-depends-on="categoryToolsEnabled">
+                        <label><span>추가 조회 페이지</span><input type="number" min="1" max="50" step="1" data-option="categoryToolsMaxMetadataPages"><em>쪽</em></label>
+                        <label><span>팔로워 묶음</span><input type="number" min="1" max="50" step="1" data-option="categoryToolsFollowerFetchMaxPerPass"><em>개</em></label>
+                        <label><span>동시 조회</span><input type="number" min="1" max="10" step="1" data-option="categoryToolsFollowerFetchConcurrency"><em>개</em></label>
+                        <label><span>조회 간격</span><input type="number" min="0" max="5000" step="100" data-option="categoryToolsFollowerFetchDelayMs"><em>ms</em></label>
+                    </div>
+                    <p class="setting-note">추가 조회 페이지를 낮추면 목록 필터 반응이 빨라지고, 높이면 더 멀리 있는 방송까지 필터링합니다.</p>
+                </details>
+            </section>
+
+            <div class="reset-row">
+                <button id="reset" class="secondary-button" type="button">기본값 복원</button>
+            </div>
+
+            <div class="action-bar">
+                <button id="save" class="primary-button" type="button">설정 저장</button>
+            </div>
+            <p id="message" class="message hidden" role="status" aria-live="polite">설정이 저장되었습니다.</p>
+        </form>
+    </main>
+
+    <script src="shared/settings.js"></script>
+    <script src="options.js"></script>
+</body>
+</html>
