@@ -55,6 +55,7 @@ function getEnabledFeatureCount(options) {
         options.skipControlEnabled,
         options.vodBroadcastClockEnabled,
         options.timeMachineLagLabelEnabled,
+        options.vodReplayChatFixEnabled,
         options.adblockPopupEnabled,
         options.monthlyBroadcastTimeEnabled,
         options.liveWatchHistoryEnabled,

@@ -18,6 +18,10 @@
     let pageChangeTimer = null;
     let scrollUnlockScheduled = false;
     let featureOptions = BetterChzzkSettings.normalizeOptions();
+    let domObserver = null;
+    let bodyObserver = null;
+    let removePageChangeDetection = null;
+    let runtimeInstalled = false;
     const scheduleDomSync = createThrottledDomSync(removeAdsPopup);
 
     function isEnabled() {
@@ -198,7 +202,9 @@ ${AD_POPUP_SELECTOR}[${AD_SUPPRESS_ATTR}="1"]{
     }
 
     function startDomObserver() {
-        const observer = new MutationObserver((mutations) => {
+        if (domObserver) return;
+
+        domObserver = new MutationObserver((mutations) => {
             handlePageChange();
             if (mutations.some(mutationCouldAffectPopup)) scheduleDomSync();
         });
@@ -211,33 +217,74 @@ ${AD_POPUP_SELECTOR}[${AD_SUPPRESS_ATTR}="1"]{
         };
 
         if (document.body) {
-            observer.observe(document.body, config);
+            domObserver.observe(document.body, config);
             return;
         }
 
-        const bodyObserver = new MutationObserver(() => {
+        bodyObserver = new MutationObserver(() => {
             if (!document.body) return;
             bodyObserver.disconnect();
-            observer.observe(document.body, config);
+            bodyObserver = null;
+            domObserver.observe(document.body, config);
             scheduleDomSync();
         });
 
         bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
+    function stopDomObserver() {
+        if (domObserver) {
+            domObserver.disconnect();
+            domObserver = null;
+        }
+        if (bodyObserver) {
+            bodyObserver.disconnect();
+            bodyObserver = null;
+        }
+    }
+
+    function clearRuntimeTimers() {
+        if (!pageChangeTimer) return;
+        clearTimeout(pageChangeTimer);
+        pageChangeTimer = null;
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        if (!removePageChangeDetection) {
+            removePageChangeDetection = startPageChangeDetection(handlePageChange);
+        }
+        startDomObserver();
+        runPopupPass();
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        clearRuntimeTimers();
+        stopDomObserver();
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
+        restoreAdsPopups();
+        publishReady();
+    }
+
     BetterChzzkSettings.getOptions((options) => {
         featureOptions = options;
-        runPopupPass();
+        if (isEnabled()) installRuntime();
+        else teardownRuntime();
     });
 
     BetterChzzkSettings.addOptionsChangeListener((options) => {
         featureOptions = options;
-        runPopupPass();
+        if (isEnabled()) installRuntime();
+        else teardownRuntime();
     });
 
     onReady(() => {
-        runPopupPass();
-        startPageChangeDetection(handlePageChange);
-        startDomObserver();
+        if (isEnabled()) installRuntime();
+        else teardownRuntime();
     });
 })();

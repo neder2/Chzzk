@@ -14,8 +14,11 @@
     const SLOW_RETRY_DELAY_MS = 1000;
     const DOM_APPLY_THROTTLE_MS = 300;
     const PAGE_CHANGE_APPLY_DELAY_MS = 0;
+    const VOD_STARTUP_APPLY_DELAY_MS = 1800;
+    const VOD_SHARED_TIME_APPLY_DELAY_MS = 3600;
     const ADBLOCK_GATE_TIMEOUT_MS = 1200;
     const PLAYBACK_ROUTE_RE = /^\/(?:live|video)(?:\/|$)/;
+    const VOD_ROUTE_RE = /^\/video(?:\/|$)/;
 
     let featureOptions = BetterChzzkSettings.normalizeOptions();
     let preferredQuality = BetterChzzkSettings.DEFAULT_QUALITY;
@@ -31,6 +34,13 @@
     let adblockGateTimedOut = false;
     let pendingAdblockGateWindowMs = 0;
     let requestSeq = 0;
+    let domObserver = null;
+    let bodyObserver = null;
+    let removePageChangeDetection = null;
+    let runtimeInstalled = false;
+    let adblockReadyListenerInstalled = false;
+    let playbackStartupHref = "";
+    let playbackStartupReadyAt = 0;
 
     const {
         createThrottledDomSync,
@@ -44,8 +54,51 @@
         return PLAYBACK_ROUTE_RE.test(location.pathname);
     }
 
+    function isVodRoute() {
+        return VOD_ROUTE_RE.test(location.pathname);
+    }
+
     function isEnabled() {
         return featureOptions.autoQualityEnabled && isSupportedRoute();
+    }
+
+    function getSharedStartTimeSeconds() {
+        if (!isVodRoute()) return NaN;
+
+        try {
+            const seconds = Number(new URL(location.href).searchParams.get("currentTime"));
+            return Number.isFinite(seconds) && seconds > 0 ? seconds : NaN;
+        } catch (_) {
+            return NaN;
+        }
+    }
+
+    function markPlaybackStartupWindow() {
+        if (!isEnabled()) {
+            playbackStartupHref = location.href;
+            playbackStartupReadyAt = 0;
+            return;
+        }
+
+        if (playbackStartupHref === location.href) return;
+
+        playbackStartupHref = location.href;
+        if (!isVodRoute()) {
+            playbackStartupReadyAt = 0;
+            return;
+        }
+
+        const delayMs = Number.isFinite(getSharedStartTimeSeconds())
+            ? VOD_SHARED_TIME_APPLY_DELAY_MS
+            : VOD_STARTUP_APPLY_DELAY_MS;
+        playbackStartupReadyAt = performance.now() + delayMs;
+    }
+
+    function getStartupApplyDelay(delayMs) {
+        const remainingMs = playbackStartupReadyAt
+            ? Math.ceil(playbackStartupReadyAt - performance.now())
+            : 0;
+        return Math.max(delayMs, remainingMs > 0 ? remainingMs : 0);
     }
 
     function publishState() {
@@ -177,6 +230,8 @@
     }
 
     function scheduleQualityApplyRun(delayMs) {
+        delayMs = getStartupApplyDelay(delayMs);
+
         if (applyTimer) {
             if (delayMs > 0) return;
             clearTimeout(applyTimer);
@@ -230,6 +285,7 @@
         lastUrl = location.href;
         resetAdblockGate();
         publishState();
+        markPlaybackStartupWindow();
 
         if (!isEnabled()) {
             clearAutoQualityTimers();
@@ -248,7 +304,9 @@
     }
 
     function startDomObserver() {
-        const observer = new MutationObserver((mutations) => {
+        if (domObserver) return;
+
+        domObserver = new MutationObserver((mutations) => {
             handlePageChange();
             if (!isEnabled()) return;
             if (!mutations.some(mutationCouldAffectQuality)) return;
@@ -261,18 +319,65 @@
         };
 
         if (document.body) {
-            observer.observe(document.body, config);
+            domObserver.observe(document.body, config);
             return;
         }
 
-        const bodyObserver = new MutationObserver(() => {
+        bodyObserver = new MutationObserver(() => {
             if (!document.body) return;
             bodyObserver.disconnect();
-            observer.observe(document.body, config);
+            bodyObserver = null;
+            domObserver.observe(document.body, config);
             requestQualityApplyBurst();
         });
 
         bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    function stopDomObserver() {
+        if (domObserver) {
+            domObserver.disconnect();
+            domObserver = null;
+        }
+        if (bodyObserver) {
+            bodyObserver.disconnect();
+            bodyObserver = null;
+        }
+    }
+
+    function installAdblockReadyListener() {
+        if (adblockReadyListenerInstalled) return;
+        adblockReadyListenerInstalled = true;
+        window.addEventListener(ADBLOCK_READY_EVENT, markAdblockReady);
+    }
+
+    function uninstallAdblockReadyListener() {
+        if (!adblockReadyListenerInstalled) return;
+        adblockReadyListenerInstalled = false;
+        window.removeEventListener(ADBLOCK_READY_EVENT, markAdblockReady);
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        installAdblockReadyListener();
+        if (!removePageChangeDetection) {
+            removePageChangeDetection = startPageChangeDetection(handlePageChange);
+        }
+        startDomObserver();
+        markPlaybackStartupWindow();
+        if (isEnabled()) requestQualityApplyBurst();
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        clearAutoQualityTimers();
+        stopDomObserver();
+        uninstallAdblockReadyListener();
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
     }
 
     function applyOptions(options) {
@@ -281,6 +386,13 @@
             markAdblockReady();
         }
         publishState();
+        if (!featureOptions.autoQualityEnabled) {
+            teardownRuntime();
+            return;
+        }
+
+        // Enabled installs runtime listeners; route support only gates scheduled work.
+        installRuntime();
         if (isEnabled()) {
             requestQualityApplyBurst();
             return;
@@ -291,11 +403,8 @@
 
     BetterChzzkSettings.getOptions(applyOptions);
     BetterChzzkSettings.addOptionsChangeListener(applyOptions);
-    window.addEventListener(ADBLOCK_READY_EVENT, markAdblockReady);
 
     onReady(() => {
-        startPageChangeDetection(handlePageChange);
-        startDomObserver();
-        if (isEnabled()) requestQualityApplyBurst();
+        if (featureOptions.autoQualityEnabled) installRuntime();
     });
 })();

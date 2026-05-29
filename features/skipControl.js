@@ -21,10 +21,11 @@
     const CONTROL_AREA_MAX_HEIGHT = 96;
     const LIVE_EDGE_INTENT_GRACE_MS = 1200;
     const PAUSED_CONTROL_INTENT_GRACE_MS = 1200;
-    const LIVE_RESUME_RESTORE_WINDOW_MS = 2800;
+    const LIVE_RESUME_RESTORE_WINDOW_MS = 8000;
     const LIVE_RESUME_RESTORE_RETRY_MS = 180;
-    const LIVE_RESUME_RESTORE_MAX_ATTEMPTS = 18;
+    const LIVE_RESUME_RESTORE_MAX_ATTEMPTS = 45;
     const LIVE_RESUME_ALLOWED_DRIFT_SECONDS = 1.5;
+    const LIVE_PAUSE_CACHE_SYNC_INTERVAL_MS = 1000;
     const { DEFAULT_SKIP_SECONDS, normalizeSkipSeconds, normalizeOptions } = BetterChzzkSettings;
     const {
         createThrottledDomSync,
@@ -48,12 +49,20 @@
     let pageChangeTimer = null;
     let attachedVideo = null;
     let pauseSnapshot = null;
+    let pauseCacheSyncTimer = null;
     let resumeRestoreState = null;
     let resumeRestoreTimer = null;
     let lastLiveEdgeIntentAt = 0;
     let lastPausedControlIntentAt = 0;
     let domObserver = null;
     let domObserverMode = "";
+    let bodyObserver = null;
+    let removePageChangeDetection = null;
+    let startupSyncTimer = 0;
+    let runtimeInstalled = false;
+    let skipPillHandlersInstalled = false;
+    let keyboardHandlerInstalled = false;
+    let liveResumeHandlersInstalled = false;
     const scheduleDomSync = createThrottledDomSync(() => {
         ensureLiveResumeGuardAttached();
         ensureSkipPillInjected();
@@ -269,6 +278,14 @@
         return performance.now() - lastPausedControlIntentAt <= PAUSED_CONTROL_INTENT_GRACE_MS;
     }
 
+    function getLiveRouteKey() {
+        return isLiveRoute() ? location.pathname : "";
+    }
+
+    function isPauseSnapshotForCurrentRoute() {
+        return Boolean(pauseSnapshot?.routeKey && pauseSnapshot.routeKey === getLiveRouteKey());
+    }
+
     function canUseLiveResumeGuard(video) {
         return (
             isLiveResumeGuardEnabled() &&
@@ -279,20 +296,61 @@
         );
     }
 
-    function rememberPausedPosition(video) {
+    function rememberPausedPosition(video, { preserveCachedTime = false } = {}) {
         if (!canUseLiveResumeGuard(video) || isRecentLiveEdgeIntent()) {
             if (pauseSnapshot?.video === video) pauseSnapshot = null;
             return;
         }
 
-        const time = clampSeekTime(video, video.currentTime);
+        const seekableRange = getSeekableRange(video);
+        if (!seekableRange) return;
+
+        const routeKey = getLiveRouteKey();
+        const existingTime =
+            preserveCachedTime && isPauseSnapshotForCurrentRoute()
+                ? pauseSnapshot.time
+                : video.currentTime;
+        const time = clampSeekTime(video, existingTime);
         if (!Number.isFinite(time)) return;
 
         pauseSnapshot = {
             video,
+            routeKey,
             time,
-            storedAt: performance.now(),
+            seekableStart: seekableRange.start,
+            seekableEnd: seekableRange.end,
+            storedAt: pauseSnapshot?.routeKey === routeKey ? pauseSnapshot.storedAt : performance.now(),
+            refreshedAt: performance.now(),
         };
+    }
+
+    function refreshPauseCacheSnapshot(video = attachedVideo) {
+        if (!(video instanceof HTMLVideoElement) || !video.paused || !isLiveResumeGuardEnabled() || !isLiveRoute()) {
+            stopPauseCacheSync();
+            return;
+        }
+
+        if (!canUseLiveResumeGuard(video) || isRecentLiveEdgeIntent()) return;
+
+        if (!isPauseSnapshotForCurrentRoute()) {
+            rememberPausedPosition(video);
+            return;
+        }
+
+        rememberPausedPosition(video, { preserveCachedTime: true });
+    }
+
+    function startPauseCacheSync(video = attachedVideo) {
+        if (!(video instanceof HTMLVideoElement) || pauseCacheSyncTimer) return;
+        pauseCacheSyncTimer = setInterval(() => {
+            refreshPauseCacheSnapshot(attachedVideo);
+        }, LIVE_PAUSE_CACHE_SYNC_INTERVAL_MS);
+    }
+
+    function stopPauseCacheSync() {
+        if (!pauseCacheSyncTimer) return;
+        clearInterval(pauseCacheSyncTimer);
+        pauseCacheSyncTimer = null;
     }
 
     function cancelResumeRestore({ clearSnapshot = false } = {}) {
@@ -348,7 +406,7 @@
     }
 
     function startResumeRestore(video) {
-        if (!pauseSnapshot || pauseSnapshot.video !== video) return;
+        if (!isPauseSnapshotForCurrentRoute()) return;
         if (!canUseLiveResumeGuard(video) || isRecentLiveEdgeIntent()) {
             cancelResumeRestore({ clearSnapshot: true });
             return;
@@ -356,6 +414,8 @@
 
         const target = clampSeekTime(video, pauseSnapshot.time);
         if (!Number.isFinite(target)) return;
+        pauseSnapshot.video = video;
+        pauseSnapshot.time = target;
 
         resumeRestoreState = {
             video,
@@ -371,10 +431,16 @@
     function onVideoPause(event) {
         cancelResumeRestore();
         rememberPausedPosition(event.currentTarget);
+        startPauseCacheSync(event.currentTarget);
     }
 
     function onVideoPlay(event) {
+        stopPauseCacheSync();
         startResumeRestore(event.currentTarget);
+    }
+
+    function onVideoProgress(event) {
+        refreshPauseCacheSnapshot(event.currentTarget);
     }
 
     function onVideoSeeked(event) {
@@ -388,21 +454,37 @@
             return;
         }
         rememberPausedPosition(video);
+        startPauseCacheSync(video);
     }
 
-    function detachLiveResumeGuard() {
-        if (!attachedVideo) return;
+    function detachLiveResumeGuard({ clearSnapshot = true } = {}) {
+        if (!attachedVideo) {
+            stopPauseCacheSync();
+            cancelResumeRestore({ clearSnapshot });
+            return;
+        }
         attachedVideo.removeEventListener("pause", onVideoPause, true);
         attachedVideo.removeEventListener("play", onVideoPlay, true);
         attachedVideo.removeEventListener("playing", onVideoPlay, true);
         attachedVideo.removeEventListener("seeked", onVideoSeeked, true);
+        attachedVideo.removeEventListener("progress", onVideoProgress, true);
+        attachedVideo.removeEventListener("durationchange", onVideoProgress, true);
+        attachedVideo.removeEventListener("loadedmetadata", onVideoProgress, true);
         attachedVideo = null;
-        cancelResumeRestore({ clearSnapshot: true });
+        stopPauseCacheSync();
+        cancelResumeRestore({ clearSnapshot });
     }
 
     function attachLiveResumeGuard(video) {
-        if (attachedVideo === video) return;
-        detachLiveResumeGuard();
+        if (attachedVideo === video) {
+            if (video instanceof HTMLVideoElement && video.paused) {
+                refreshPauseCacheSnapshot(video);
+                startPauseCacheSync(video);
+            }
+            return;
+        }
+        const keepSnapshot = isPauseSnapshotForCurrentRoute();
+        detachLiveResumeGuard({ clearSnapshot: !keepSnapshot });
         if (!(video instanceof HTMLVideoElement)) return;
 
         attachedVideo = video;
@@ -410,8 +492,16 @@
         attachedVideo.addEventListener("play", onVideoPlay, true);
         attachedVideo.addEventListener("playing", onVideoPlay, true);
         attachedVideo.addEventListener("seeked", onVideoSeeked, true);
+        attachedVideo.addEventListener("progress", onVideoProgress, true);
+        attachedVideo.addEventListener("durationchange", onVideoProgress, true);
+        attachedVideo.addEventListener("loadedmetadata", onVideoProgress, true);
 
-        if (video.paused) rememberPausedPosition(video);
+        if (video.paused) {
+            refreshPauseCacheSnapshot(video);
+            startPauseCacheSync(video);
+        } else if (isPauseSnapshotForCurrentRoute()) {
+            startResumeRestore(video);
+        }
     }
 
     function ensureLiveResumeGuardAttached() {
@@ -672,41 +762,42 @@
         return pill;
     }
 
+    function handleSkipPillClick(event) {
+        const pill = getSkipPillElement();
+        if (!pill || !pill.contains(event.target)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        setSkipSeconds(DEFAULT_SKIP_SECONDS);
+    }
+
+    function handleSkipPillWheel(event) {
+        const pill = getSkipPillElement();
+        if (!pill || !pill.contains(event.target)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        const direction = event.deltaY < 0 ? 1 : -1;
+        const step = getWheelStep(event);
+        setSkipSeconds(skipSeconds + direction * step);
+    }
+
     function installSkipPillGlobalHandlers() {
-        if (window.__betterChzzkSkipPillHandlersInstalled) return;
-        window.__betterChzzkSkipPillHandlersInstalled = true;
+        if (skipPillHandlersInstalled) return;
+        skipPillHandlersInstalled = true;
+        window.addEventListener("click", handleSkipPillClick, true);
+        window.addEventListener("wheel", handleSkipPillWheel, { capture: true, passive: false });
+    }
 
-        window.addEventListener(
-            "click",
-            (event) => {
-                const pill = getSkipPillElement();
-                if (!pill || !pill.contains(event.target)) return;
-
-                event.preventDefault();
-                event.stopPropagation();
-                event.stopImmediatePropagation();
-
-                setSkipSeconds(DEFAULT_SKIP_SECONDS);
-            },
-            true
-        );
-
-        window.addEventListener(
-            "wheel",
-            (event) => {
-                const pill = getSkipPillElement();
-                if (!pill || !pill.contains(event.target)) return;
-
-                event.preventDefault();
-                event.stopPropagation();
-                event.stopImmediatePropagation();
-
-                const direction = event.deltaY < 0 ? 1 : -1;
-                const step = getWheelStep(event);
-                setSkipSeconds(skipSeconds + direction * step);
-            },
-            { capture: true, passive: false }
-        );
+    function uninstallSkipPillGlobalHandlers() {
+        if (!skipPillHandlersInstalled) return;
+        skipPillHandlersInstalled = false;
+        window.removeEventListener("click", handleSkipPillClick, true);
+        window.removeEventListener("wheel", handleSkipPillWheel, true);
     }
 
     function syncPillTypography(pill, anchorEl) {
@@ -882,9 +973,10 @@
             return;
         }
 
-        const bodyObserver = new MutationObserver(() => {
+        bodyObserver = new MutationObserver(() => {
             if (!document.body) return;
             bodyObserver.disconnect();
+            bodyObserver = null;
             refreshDomObserverConfig();
             scheduleDomSync();
         });
@@ -928,9 +1020,28 @@
         domObserverMode = nextMode;
     }
 
-    if (!window.__betterChzzkArrowSeekInstalled) {
-        window.__betterChzzkArrowSeekInstalled = true;
+    function stopDomObserver() {
+        if (domObserver) {
+            domObserver.disconnect();
+            domObserver = null;
+        }
+        if (bodyObserver) {
+            bodyObserver.disconnect();
+            bodyObserver = null;
+        }
+        domObserverMode = "";
+    }
+
+    function installKeyboardHandler() {
+        if (keyboardHandlerInstalled) return;
+        keyboardHandlerInstalled = true;
         window.addEventListener("keydown", onKeyDownSeek, true);
+    }
+
+    function uninstallKeyboardHandler() {
+        if (!keyboardHandlerInstalled) return;
+        keyboardHandlerInstalled = false;
+        window.removeEventListener("keydown", onKeyDownSeek, true);
     }
 
     function handleLiveControlIntent(event) {
@@ -956,15 +1067,81 @@
     }
 
     function installLiveResumeGlobalHandlers() {
-        if (window.__betterChzzkLiveResumeHandlersInstalled) return;
-        window.__betterChzzkLiveResumeHandlersInstalled = true;
+        if (liveResumeHandlersInstalled) return;
+        liveResumeHandlersInstalled = true;
         window.addEventListener("pointerdown", handleLiveControlIntent, true);
         window.addEventListener("click", handleLiveControlIntent, true);
+    }
+
+    function uninstallLiveResumeGlobalHandlers() {
+        if (!liveResumeHandlersInstalled) return;
+        liveResumeHandlersInstalled = false;
+        window.removeEventListener("pointerdown", handleLiveControlIntent, true);
+        window.removeEventListener("click", handleLiveControlIntent, true);
+    }
+
+    function clearRuntimeTimers() {
+        if (pageChangeTimer) {
+            clearTimeout(pageChangeTimer);
+            pageChangeTimer = null;
+        }
+        if (delayedSkipSyncTimer) {
+            clearTimeout(delayedSkipSyncTimer);
+            delayedSkipSyncTimer = null;
+        }
+        if (skipSyncRafId !== null) {
+            cancelAnimationFrame(skipSyncRafId);
+            skipSyncRafId = null;
+        }
+        if (startupSyncTimer) {
+            clearTimeout(startupSyncTimer);
+            startupSyncTimer = 0;
+        }
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        installKeyboardHandler();
+        installLiveResumeGlobalHandlers();
+        if (!removePageChangeDetection) {
+            removePageChangeDetection = startPageChangeDetection(handlePageChange);
+        }
+        startDomObserver();
+        ensureLiveResumeGuardAttached();
+        if (isPillEnabled()) {
+            ensureSkipPillInjected();
+            scheduleSkipPillSync({ delayed: true });
+        }
+        startupSyncTimer = setTimeout(() => {
+            startupSyncTimer = 0;
+            if (isPillEnabled()) ensureSkipPillInjected();
+        }, 800);
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        clearRuntimeTimers();
+        uninstallSkipPillGlobalHandlers();
+        uninstallKeyboardHandler();
+        uninstallLiveResumeGlobalHandlers();
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
+        stopDomObserver();
+        removeSkipPill();
+        detachLiveResumeGuard();
     }
 
     function applyOptions(options) {
         featureOptions = options;
         skipSeconds = normalizeSkipSeconds(options.skipSeconds);
+        if (!isSkipEnabled()) {
+            teardownRuntime();
+            return;
+        }
+        installRuntime();
         ensureLiveResumeGuardAttached();
         refreshDomObserverConfig();
         if (!isPlaybackRoute()) {
@@ -984,16 +1161,6 @@
     BetterChzzkSettings.addOptionsChangeListener(applyOptions);
 
     onReady(() => {
-        installLiveResumeGlobalHandlers();
-        ensureLiveResumeGuardAttached();
-        if (isPillEnabled()) {
-            ensureSkipPillInjected();
-            scheduleSkipPillSync({ delayed: true });
-        }
-        startPageChangeDetection(handlePageChange);
-        startDomObserver();
-        setTimeout(() => {
-            if (isPillEnabled()) ensureSkipPillInjected();
-        }, 800);
+        if (isSkipEnabled()) installRuntime();
     });
 })();

@@ -43,6 +43,9 @@
     let lastIndexApplyAt = 0;
     let activeIndexAbortController = null;
     let activeCommentAbortController = null;
+    let runtimeInstalled = false;
+    let routeListenersInstalled = false;
+    let commentTooltipListenersInstalled = false;
     const {
         isLastPage: isLastPageResponse,
         normSpace,
@@ -586,8 +589,7 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
         try {
             const texts = [];
             for (let page = 0; page < getCommentMaxPagesPerVideo(); page++) {
-                if (token !== commentSearchToken) break;
-                if (signal?.aborted) {
+                if (token !== commentSearchToken || signal?.aborted) {
                     shouldMarkFetched = false;
                     break;
                 }
@@ -1375,6 +1377,42 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
         commentTooltipHideTimer = window.setTimeout(hideCommentTooltip, 650);
     }
 
+    function handleCommentTooltipScroll() {
+        if (activeCommentTooltipIcon?.isConnected) positionCommentTooltip(activeCommentTooltipIcon);
+        else hideCommentTooltip();
+    }
+
+    function handleCommentTooltipResize() {
+        alignCommentIconsToTagRows();
+        if (activeCommentTooltipIcon?.isConnected) positionCommentTooltip(activeCommentTooltipIcon);
+        else hideCommentTooltip();
+    }
+
+    function installCommentTooltipListeners() {
+        if (commentTooltipListenersInstalled) return;
+        commentTooltipListenersInstalled = true;
+        window.addEventListener("scroll", handleCommentTooltipScroll, true);
+        window.addEventListener("resize", handleCommentTooltipResize);
+        document.addEventListener("pointermove", handleCommentTooltipPointerMove, true);
+        document.addEventListener("pointerdown", handleCommentTooltipPointerDown, true);
+    }
+
+    function uninstallCommentTooltipListeners() {
+        if (!commentTooltipListenersInstalled) return;
+        commentTooltipListenersInstalled = false;
+        window.removeEventListener("scroll", handleCommentTooltipScroll, true);
+        window.removeEventListener("resize", handleCommentTooltipResize);
+        document.removeEventListener("pointermove", handleCommentTooltipPointerMove, true);
+        document.removeEventListener("pointerdown", handleCommentTooltipPointerDown, true);
+    }
+
+    function removeCommentTooltip() {
+        hideCommentTooltip();
+        if (commentTooltip) commentTooltip.remove();
+        commentTooltip = null;
+        uninstallCommentTooltipListeners();
+    }
+
     function getOpenCommentTooltipState() {
         if (!activeCommentTooltipIcon || commentTooltip?.getAttribute("data-show") !== "1") return null;
         return {
@@ -1464,18 +1502,7 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
         tooltip.setAttribute(COMMENT_TOOLTIP_ATTR, "1");
         document.body.appendChild(tooltip);
         commentTooltip = tooltip;
-
-        window.addEventListener("scroll", () => {
-            if (activeCommentTooltipIcon?.isConnected) positionCommentTooltip(activeCommentTooltipIcon);
-            else hideCommentTooltip();
-        }, true);
-        window.addEventListener("resize", () => {
-            alignCommentIconsToTagRows();
-            if (activeCommentTooltipIcon?.isConnected) positionCommentTooltip(activeCommentTooltipIcon);
-            else hideCommentTooltip();
-        });
-        document.addEventListener("pointermove", handleCommentTooltipPointerMove, true);
-        document.addEventListener("pointerdown", handleCommentTooltipPointerDown, true);
+        installCommentTooltipListeners();
 
         return tooltip;
     }
@@ -2091,7 +2118,7 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
     }
 
     function removeBar() {
-        hideCommentTooltip();
+        removeCommentTooltip();
         const bar = document.getElementById(BAR_ID);
         if (bar) bar.remove();
         document.querySelectorAll(`[${INJECTED_ATTR}="1"]`).forEach((el) => el.remove());
@@ -2168,6 +2195,10 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
         scheduled = true;
         requestAnimationFrame(() => {
             scheduled = false;
+            if (!isFeatureEnabled() || !isVideosTab()) {
+                removeBarIfMounted();
+                return;
+            }
             ensureBarMounted();
         });
     }
@@ -2193,8 +2224,46 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
     }
 
     function removeCommentSurfaces() {
-        hideCommentTooltip();
+        removeCommentTooltip();
         document.querySelectorAll(`[${COMMENT_ICON_ATTR}="1"]`).forEach((el) => el.remove());
+    }
+
+    function stopObserver() {
+        if (!observer) return;
+        observer.disconnect();
+        observer = null;
+    }
+
+    function installRouteListeners() {
+        if (routeListenersInstalled) return;
+        routeListenersInstalled = true;
+        window.addEventListener("popstate", schedule, true);
+        window.addEventListener("hashchange", schedule, true);
+    }
+
+    function uninstallRouteListeners() {
+        if (!routeListenersInstalled) return;
+        routeListenersInstalled = false;
+        window.removeEventListener("popstate", schedule, true);
+        window.removeEventListener("hashchange", schedule, true);
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        startObserver();
+        installRouteListeners();
+        schedule();
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        scheduled = false;
+        stopActiveFetch();
+        removeBarIfMounted();
+        removeCommentTooltip();
+        stopObserver();
+        uninstallRouteListeners();
     }
 
     function applyOptions(options) {
@@ -2204,9 +2273,11 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
         featureOptions = options;
 
         if (!isFeatureEnabled()) {
-            removeBarIfMounted();
+            teardownRuntime();
             return;
         }
+
+        installRuntime();
 
         if (!isVideosTab()) {
             removeBarIfMounted();
@@ -2269,9 +2340,6 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
     BetterChzzkSettings.addOptionsChangeListener(applyOptions);
 
     onReady(() => {
-        startObserver();
-        schedule();
-        window.addEventListener("popstate", schedule, true);
-        window.addEventListener("hashchange", schedule, true);
+        if (isFeatureEnabled()) installRuntime();
     });
 })();
