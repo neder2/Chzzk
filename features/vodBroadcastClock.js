@@ -79,7 +79,13 @@
     let pageChangeTimer = 0;
     let lastUrl = location.href;
     let domObserver = null;
+    let bodyObserver = null;
     let domObserverMode = "";
+    let removePageChangeDetection = null;
+    let runtimeInstalled = false;
+    let pageListenersInstalled = false;
+    let storageChangeListenerInstalled = false;
+    let startupSyncTimer = 0;
     const detailCache = new Map();
     const historyInfoCache = new Map();
     const storage = globalThis.chrome?.storage?.local;
@@ -218,7 +224,20 @@
             .trim();
     }
 
-    function normalizeTitleHistory(value) {
+    function escapeRegExp(value) {
+        return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function cleanEntryTitle(value, channelName = "") {
+        const title = cleanTitle(value);
+        const channel = cleanTitle(channelName);
+        if (!title || !channel) return title;
+
+        const match = title.match(new RegExp(`^${escapeRegExp(channel)}\\s*[-|:·]\\s*(.+)$`, "i"));
+        return match ? cleanTitle(match[1]) || title : title;
+    }
+
+    function normalizeTitleHistory(value, channelName = "") {
         const rows = Array.isArray(value) ? value : [];
         const byTitle = new Map();
 
@@ -228,9 +247,9 @@
             let lastSeenAt = 0;
 
             if (typeof row === "string") {
-                title = cleanTitle(row);
+                title = cleanEntryTitle(row, channelName);
             } else if (row && typeof row === "object") {
-                title = cleanTitle(pickString(row.title, row.name, row.value));
+                title = cleanEntryTitle(pickString(row.title, row.name, row.value), channelName);
                 firstSeenAt = Number(row.firstSeenAt) || Number(row.seenAt) || Number(row.createdAt) || 0;
                 lastSeenAt = Number(row.lastSeenAt) || Number(row.updatedAt) || firstSeenAt;
             }
@@ -256,12 +275,12 @@
     function addTitleHistory(target, title, firstSeenAt = Date.now(), lastSeenAt = firstSeenAt) {
         if (!target) return;
 
-        const clean = cleanTitle(title);
+        const clean = cleanEntryTitle(title, target.channelName);
         if (!clean || clean === "제목 없는 라이브") return;
 
         const first = Number(firstSeenAt) || Date.now();
         const last = Number(lastSeenAt) || first;
-        const history = normalizeTitleHistory(target.titleHistory);
+        const history = normalizeTitleHistory(target.titleHistory, target.channelName);
         const existing = history.find((row) => row.title === clean);
 
         if (existing) {
@@ -287,17 +306,18 @@
         return rawEntries
             .filter((row) => row && typeof row === "object")
             .map((row) => {
+                const channelName = pickString(row.channelName);
                 const entry = {
                     id: pickString(row.id),
                     channelId: pickString(row.channelId),
                     liveId: pickString(row.liveId),
                     replayVideoNo: pickString(row.replayVideoNo, row.videoNo, row.videoId),
-                    title: pickString(row.title),
-                    channelName: pickString(row.channelName),
+                    title: cleanEntryTitle(pickString(row.title), channelName),
+                    channelName,
                     liveOpenDate: pickString(row.liveOpenDate),
                     firstWatchedAt: Number(row.firstWatchedAt) || 0,
                     lastWatchedAt: Number(row.lastWatchedAt) || 0,
-                    titleHistory: normalizeTitleHistory(row.titleHistory),
+                    titleHistory: normalizeTitleHistory(row.titleHistory, channelName),
                 };
                 addTitleHistory(entry, entry.title, entry.firstWatchedAt || entry.lastWatchedAt);
                 return entry;
@@ -344,6 +364,13 @@
         if (isVodRoute()) scheduleSync();
     }
 
+    function clearWatchHistorySnapshotCache() {
+        watchHistorySnapshot = null;
+        watchHistorySnapshotPromise = null;
+        historyInfoCache.clear();
+        currentHistoryInfo = null;
+    }
+
     function normalizeForMatch(value) {
         return compactSpaces(value).toLowerCase().replace(/[^\p{Letter}\p{Number}]+/gu, "");
     }
@@ -356,8 +383,28 @@
         return pickString(detail?.channelId, detail?.channel?.channelId, detail?.channel?.id, detail?.channel?.channelNo);
     }
 
+    function getVideoDetailChannelName(detail) {
+        return pickString(detail?.channelName, detail?.channel?.channelName, detail?.channel?.name);
+    }
+
     function getVideoDetailTitle(detail) {
-        return cleanTitle(pickString(detail?.videoTitle, detail?.title, detail?.liveTitle));
+        return cleanEntryTitle(pickString(detail?.videoTitle, detail?.title, detail?.liveTitle), getVideoDetailChannelName(detail));
+    }
+
+    function getHistoryChannelMatch(entry, detail) {
+        const entryChannelId = pickString(entry?.channelId);
+        const detailChannelId = getVideoDetailChannelId(detail);
+        if (entryChannelId && detailChannelId) {
+            return entryChannelId === detailChannelId ? "same" : "different";
+        }
+
+        const entryChannelName = normalizeForMatch(entry?.channelName);
+        const detailChannelName = normalizeForMatch(getVideoDetailChannelName(detail));
+        if (entryChannelName && detailChannelName) {
+            return entryChannelName === detailChannelName ? "same" : "different";
+        }
+
+        return "unknown";
     }
 
     function getVideoDurationSeconds(detail) {
@@ -399,17 +446,23 @@
     function scoreHistoryMatch(entry, videoNo, detail) {
         let score = 0;
 
-        if (entry.replayVideoNo && entry.replayVideoNo === videoNo) score += 1000;
+        const channelMatch = getHistoryChannelMatch(entry, detail);
+        if (channelMatch === "different") return Number.NEGATIVE_INFINITY;
+
+        const replayVideoNoMatches = Boolean(entry.replayVideoNo && entry.replayVideoNo === videoNo);
+        if (replayVideoNoMatches) score += 1000;
 
         const liveId = getVideoDetailLiveId(detail);
-        if (entry.liveId && liveId && entry.liveId === liveId) score += 650;
+        const liveIdMatches = Boolean(entry.liveId && liveId && entry.liveId === liveId);
+        if (liveIdMatches) score += 650;
 
-        const channelId = getVideoDetailChannelId(detail);
-        const sameChannel = Boolean(entry.channelId && channelId && entry.channelId === channelId);
+        const sameChannel = channelMatch === "same";
         if (sameChannel) {
             score += 80;
             if (entryOverlapsVideoWindow(entry, detail)) score += 360;
         }
+
+        if (!replayVideoNoMatches && !liveIdMatches && !sameChannel) return score;
 
         const startMs = getStartMsFromDetail(detail);
         const entryStartMs = getEntryStartMs(entry);
@@ -449,7 +502,7 @@
             entryId: best.entry.id,
             channelName: best.entry.channelName,
             replayTitle: getVideoDetailTitle(detail),
-            titleRows: normalizeTitleHistory(best.entry.titleHistory),
+            titleRows: normalizeTitleHistory(best.entry.titleHistory, best.entry.channelName),
         };
     }
 
@@ -1036,9 +1089,9 @@
         return firstText || lastText || "기록 시각 없음";
     }
 
-    function getDistinctTitleRows(rows) {
+    function getDistinctTitleRows(rows, channelName = "") {
         const byTitle = new Map();
-        for (const row of normalizeTitleHistory(rows)) {
+        for (const row of normalizeTitleHistory(rows, channelName)) {
             const key = normalizeForMatch(row.title);
             if (!key) continue;
             const existing = byTitle.get(key);
@@ -1054,7 +1107,7 @@
     }
 
     function getPreviousTitleRows() {
-        const rows = getDistinctTitleRows(currentHistoryInfo?.titleRows || []);
+        const rows = getDistinctTitleRows(currentHistoryInfo?.titleRows || [], currentHistoryInfo?.channelName);
         if (!rows.length) return [];
 
         const currentTitleNorm = normalizeForMatch(currentHistoryInfo?.replayTitle);
@@ -1375,6 +1428,17 @@
         }, PAGE_CHANGE_DELAY_MS);
     }
 
+    function clearRuntimeTimers() {
+        if (pageChangeTimer) {
+            clearTimeout(pageChangeTimer);
+            pageChangeTimer = 0;
+        }
+        if (startupSyncTimer) {
+            clearTimeout(startupSyncTimer);
+            startupSyncTimer = 0;
+        }
+    }
+
     function mutationCouldAffectClock(mutation) {
         if (mutationMatchesSelector(mutation, RELEVANT_DOM_SELECTOR)) return true;
         return mutation.target instanceof Element &&
@@ -1420,14 +1484,27 @@
             return;
         }
 
-        const bodyObserver = new MutationObserver(() => {
+        bodyObserver = new MutationObserver(() => {
             if (!document.body) return;
             bodyObserver.disconnect();
+            bodyObserver = null;
             refreshDomObserverConfig();
             scheduleSync();
         });
 
         bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    function stopDomObserver() {
+        if (domObserver) {
+            domObserver.disconnect();
+            domObserver = null;
+            domObserverMode = "";
+        }
+        if (bodyObserver) {
+            bodyObserver.disconnect();
+            bodyObserver = null;
+        }
     }
 
     function handleVisibilityChange() {
@@ -1438,35 +1515,89 @@
         if (titleHistoryExpanded) scheduleSync();
     }
 
+    function handleWatchHistoryStorageChange(changes, areaName) {
+        if (areaName !== "local" || !changes[WATCH_HISTORY_STORAGE_KEY]) return;
+        invalidateWatchHistorySnapshot();
+    }
+
+    function installPageListeners() {
+        if (pageListenersInstalled) return;
+        pageListenersInstalled = true;
+        document.addEventListener("visibilitychange", handleVisibilityChange, true);
+        window.addEventListener("resize", handleTitleHistoryViewportChange, true);
+        window.addEventListener("scroll", handleTitleHistoryViewportChange, true);
+    }
+
+    function uninstallPageListeners() {
+        if (!pageListenersInstalled) return;
+        pageListenersInstalled = false;
+        document.removeEventListener("visibilitychange", handleVisibilityChange, true);
+        window.removeEventListener("resize", handleTitleHistoryViewportChange, true);
+        window.removeEventListener("scroll", handleTitleHistoryViewportChange, true);
+    }
+
+    function installStorageChangeListener() {
+        if (storageChangeListenerInstalled || !globalThis.chrome?.storage?.onChanged) return;
+        storageChangeListenerInstalled = true;
+        chrome.storage.onChanged.addListener(handleWatchHistoryStorageChange);
+    }
+
+    function uninstallStorageChangeListener() {
+        if (!storageChangeListenerInstalled || !globalThis.chrome?.storage?.onChanged) return;
+        storageChangeListenerInstalled = false;
+        chrome.storage.onChanged.removeListener(handleWatchHistoryStorageChange);
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        injectClockStyleOnce();
+        if (!removePageChangeDetection) {
+            removePageChangeDetection = startPageChangeDetection(handlePageChange);
+        }
+        startDomObserver();
+        installPageListeners();
+        installStorageChangeListener();
+        scheduleSync();
+        if (!startupSyncTimer) {
+            startupSyncTimer = setTimeout(() => {
+                startupSyncTimer = 0;
+                scheduleSync();
+            }, 800);
+        }
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        clearRuntimeTimers();
+        clearRouteState();
+        clearWatchHistorySnapshotCache();
+        stopDomObserver();
+        uninstallPageListeners();
+        uninstallStorageChangeListener();
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
+    }
+
     function applyOptions(options) {
         featureOptions = options;
-        refreshDomObserverConfig();
-
-        if (isVodFeatureEnabled()) {
-            scheduleSync();
+        if (!isVodFeatureEnabled()) {
+            teardownRuntime();
             return;
         }
 
-        clearRouteState();
+        installRuntime();
+        refreshDomObserverConfig();
+
+        scheduleSync();
     }
 
     BetterChzzkSettings.getOptions(applyOptions);
     BetterChzzkSettings.addOptionsChangeListener(applyOptions);
-    if (globalThis.chrome?.storage?.onChanged) {
-        chrome.storage.onChanged.addListener((changes, areaName) => {
-            if (areaName !== "local" || !changes[WATCH_HISTORY_STORAGE_KEY]) return;
-            invalidateWatchHistorySnapshot();
-        });
-    }
 
     onReady(() => {
-        injectClockStyleOnce();
-        startPageChangeDetection(handlePageChange);
-        startDomObserver();
-        document.addEventListener("visibilitychange", handleVisibilityChange, true);
-        window.addEventListener("resize", handleTitleHistoryViewportChange, true);
-        window.addEventListener("scroll", handleTitleHistoryViewportChange, true);
-        scheduleSync();
-        setTimeout(scheduleSync, 800);
+        if (isVodFeatureEnabled()) installRuntime();
     });
 })();

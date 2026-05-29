@@ -21,18 +21,6 @@
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    function pickArray(obj) {
-        if (!obj || typeof obj !== "object") return null;
-        if (Array.isArray(obj)) return obj;
-        for (const key of ["data", "videos", "list", "items", "content"]) {
-            if (Array.isArray(obj[key])) return obj[key];
-        }
-        for (const value of Object.values(obj)) {
-            if (Array.isArray(value) && value.length && typeof value[0] === "object") return value;
-        }
-        return null;
-    }
-
     function isVisible(el) {
         if (!(el instanceof HTMLElement)) return false;
         const rect = el.getBoundingClientRect();
@@ -109,9 +97,14 @@
         };
     }
 
+    // Feature runtimes stay installed while enabled; route-specific handlers decide mount/unmount/no-op.
     function startPageChangeDetection(handlePageChange) {
         window.addEventListener("popstate", handlePageChange, true);
         window.addEventListener("hashchange", handlePageChange, true);
+        return () => {
+            window.removeEventListener("popstate", handlePageChange, true);
+            window.removeEventListener("hashchange", handlePageChange, true);
+        };
     }
 
     function injectStyleOnce(id, cssText) {
@@ -145,7 +138,6 @@
         normSpace,
         normalizeCompact,
         sleep,
-        pickArray,
         isVisible,
         pickLargestVisible,
         getMainVideoElement,
