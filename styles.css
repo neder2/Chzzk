@@ -117,7 +117,7 @@ button {
 
 .hero {
     display: grid;
-    grid-template-columns: 42px minmax(0, 1fr) auto;
+    grid-template-columns: 58px minmax(0, 1fr) auto;
     gap: 12px;
     align-items: center;
 }
@@ -127,16 +127,10 @@ button {
 }
 
 .brand-mark {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 42px;
-    height: 42px;
-    border-radius: 8px;
-    color: #001f14;
-    background: var(--accent);
-    font-size: 22px;
-    font-weight: 900;
+    display: block;
+    width: 58px;
+    height: 58px;
+    object-fit: contain;
 }
 
 .eyebrow,
@@ -1230,14 +1224,13 @@ h1 {
     }
 
     .hero {
-        grid-template-columns: 36px minmax(0, 1fr);
+        grid-template-columns: 44px minmax(0, 1fr);
         gap: 8px;
     }
 
     .brand-mark {
-        width: 36px;
-        height: 36px;
-        font-size: 18px;
+        width: 44px;
+        height: 44px;
     }
 
     h1 {
