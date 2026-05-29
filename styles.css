@@ -646,7 +646,7 @@ h1 {
 }
 
 .history-filter-row {
-    grid-template-columns: minmax(0, 1fr) 92px 92px;
+    grid-template-columns: minmax(0, 1fr) 92px 82px 74px 74px;
     margin-top: 0;
 }
 
@@ -661,7 +661,8 @@ h1 {
     margin-top: 0;
 }
 
-.history-filter-row input {
+.history-filter-row input,
+.history-filter-row select {
     min-width: 0;
     height: 36px;
     padding: 0 11px;
@@ -671,10 +672,16 @@ h1 {
     background: var(--surface-2);
 }
 
+.history-filter-row select {
+    font-size: 12px;
+    font-weight: 900;
+    padding: 0 8px;
+}
+
 .history-filter-row .secondary-button,
 .history-selection-row .secondary-button {
     height: 36px;
-    font-size: 12px;
+    font-size: 11px;
 }
 
 .history-selection-row .secondary-button {
@@ -1071,6 +1078,32 @@ h1 {
     white-space: nowrap;
 }
 
+.history-watch-range-list {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: 92px minmax(0, 1fr);
+    gap: 8px;
+    min-width: 0;
+    padding-top: 6px;
+    border-top: 1px solid var(--border);
+}
+
+.history-watch-range-heading {
+    color: var(--text-dim);
+    font-size: 10px;
+    font-weight: 900;
+    line-height: 1.35;
+}
+
+.history-watch-range-values {
+    min-width: 0;
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 900;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+}
+
 .history-empty {
     padding: 18px 12px;
     border: 1px dashed var(--border-strong);
@@ -1178,6 +1211,11 @@ h1 {
 
     .history-session-item {
         grid-template-columns: 1fr;
+    }
+
+    .history-watch-range-list {
+        grid-template-columns: 1fr;
+        gap: 3px;
     }
 
     .history-title-row {

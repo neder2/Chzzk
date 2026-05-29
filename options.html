@@ -45,6 +45,14 @@
                     <input type="checkbox" data-option="liveWatchHistoryEnabled">
                 </label>
 
+                <details class="advanced-settings">
+                    <summary>시청 기록 설정</summary>
+                    <div class="number-grid" data-depends-on="liveWatchHistoryEnabled">
+                        <label><span>최소 저장 시간</span><input type="number" min="1" max="1440" step="1" data-option="liveWatchHistoryMinMinutes"><em>분</em></label>
+                    </div>
+                    <p class="setting-note">설정한 시간보다 짧게 본 라이브는 시청 기록에 저장하지 않습니다.</p>
+                </details>
+
                 <div class="inline-action-row">
                     <a class="secondary-button" href="history.html" target="_blank" rel="noopener">시청 기록 보기</a>
                 </div>
@@ -84,6 +92,10 @@
                 <label class="toggle-row">
                     <span><strong>타임머신 지연 표시</strong><small>타임머신 시청 중 실시간 대비 지연 시간을 표시합니다.</small></span>
                     <input type="checkbox" data-option="timeMachineLagLabelEnabled">
+                </label>
+                <label class="toggle-row">
+                    <span><strong>다시보기 채팅 복구</strong><small>SPA 이동 후 라이브 채팅 다시보기가 빠진 VOD를 한 번 새로고침해 복구합니다.</small></span>
+                    <input type="checkbox" data-option="vodReplayChatFixEnabled">
                 </label>
 
                 <details class="advanced-settings">

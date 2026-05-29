@@ -53,6 +53,13 @@
     const COMMENT_TIMELINE_SEEK_RETRIES = [500, 1000, 1700, 2600, 3400];
     const COMMENT_TIMELINE_SEEK_CLEANUP_MS =
         COMMENT_TIMELINE_SEEK_RETRIES[COMMENT_TIMELINE_SEEK_RETRIES.length - 1] + COMMENT_TIMELINE_SEEK_STABLE_MS + 100;
+    const URL_START_PARAM = "currentTime";
+    const URL_START_SEEK_EPSILON_SECONDS = 1.25;
+    const URL_START_SEEK_STABLE_MS = 650;
+    const URL_START_SEEK_INTENT_WINDOW_MS = 12000;
+    const URL_START_SEEK_RETRIES = [250, 700, 1200, 2000, 3200, 5000, 7500, 10500];
+    const URL_START_SEEK_CLEANUP_MS =
+        URL_START_SEEK_RETRIES[URL_START_SEEK_RETRIES.length - 1] + URL_START_SEEK_STABLE_MS + 100;
     const MAX_TRACKED_QUALITY_TARGETS = 40;
     const TIMECODE_TEXT_RE = /^(?:\d{1,2}:)?\d{1,2}:\d{2}$/;
     const QUALITY_TARGET_KEYS = [
@@ -65,6 +72,24 @@
         "_mediaController",
         "mediaController",
     ];
+    const PLAYER_INTERACTION_SELECTOR = [
+        "video",
+        "pzp-pc",
+        "pzp-player",
+        "pzp-core-player",
+        "pzp-pc-player",
+        "[class^='pzp']",
+        "[class*=' pzp']",
+    ].join(", ");
+    const PLAYER_DISCOVERY_SELECTORS = Object.freeze([
+        "pzp-pc",
+        "pzp-player",
+        "pzp-core-player",
+        "pzp-pc-player",
+        "[class^='pzp']",
+        "[class*=' pzp']",
+    ]);
+    const PLAYER_MUTATION_SELECTOR = `video, ${PLAYER_DISCOVERY_SELECTORS.join(", ")}`;
 
     let cachedPlayer = null;
     let preferredQuality = DEFAULT_QUALITY;
@@ -79,6 +104,11 @@
     let commentTimelineSeekSeq = 0;
     let activeCommentTimelineSeek = null;
     let lastCommentTimelineSeekAt = 0;
+    let urlStartSeekSeq = 0;
+    let activeUrlStartSeek = null;
+    let lastUrlStartSeekAt = 0;
+    let lastUrlStartSeekHref = "";
+    let pageEventListenersInstalled = false;
     const trackedQualityTargets = [];
 
     const nativeDefineProperty = Object.defineProperty;
@@ -168,6 +198,108 @@
         commentTimelineSeekSeq += 1;
     }
 
+    function getUrlStartSeekSeconds() {
+        if (!isVodRoute()) return NaN;
+
+        try {
+            const raw = new URL(location.href).searchParams.get(URL_START_PARAM);
+            if (!raw) return NaN;
+
+            const seconds = Number(raw);
+            return Number.isFinite(seconds) && seconds > 0 ? seconds : NaN;
+        } catch (_) {
+            return NaN;
+        }
+    }
+
+    function isUrlStartSeekSatisfied(video, currentTime, targetSeconds, startedAt) {
+        if (!Number.isFinite(currentTime)) return false;
+        if (Math.abs(currentTime - targetSeconds) <= URL_START_SEEK_EPSILON_SECONDS) return true;
+        if (currentTime < targetSeconds) return false;
+
+        const elapsedSeconds = Math.max(0, (performance.now() - startedAt) / 1000);
+        const playbackRate = Number(video?.playbackRate);
+        const expectedProgress = elapsedSeconds * (Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1);
+        return currentTime <= targetSeconds + expectedProgress + URL_START_SEEK_EPSILON_SECONDS;
+    }
+
+    function hasRecentUrlStartSeekIntent(now = performance.now()) {
+        return isVodRoute() &&
+            lastUrlStartSeekAt > 0 &&
+            now - lastUrlStartSeekAt <= URL_START_SEEK_INTENT_WINDOW_MS;
+    }
+
+    function finishUrlStartSeek(seq) {
+        if (seq !== urlStartSeekSeq) return;
+        activeUrlStartSeek = null;
+        urlStartSeekSeq += 1;
+    }
+
+    function enforceUrlStartSeek(targetSeconds, seq, startedAt) {
+        const state = activeUrlStartSeek;
+        if (!state || state.seq !== seq || seq !== urlStartSeekSeq || !isVodRoute()) return;
+        if (location.href !== state.href) {
+            finishUrlStartSeek(seq);
+            return;
+        }
+
+        const video = getMainVideo();
+        if (!(video instanceof HTMLVideoElement)) return;
+        if (Number.isFinite(video.duration) && video.duration > 0 && targetSeconds > video.duration + 1) {
+            finishUrlStartSeek(seq);
+            return;
+        }
+
+        const currentTime = Number(video.currentTime);
+        const now = performance.now();
+        if (isUrlStartSeekSatisfied(video, currentTime, targetSeconds, startedAt)) {
+            state.satisfiedAt = state.satisfiedAt || now;
+            return;
+        }
+
+        state.satisfiedAt = 0;
+
+        try {
+            video.currentTime = targetSeconds;
+        } catch (_) {
+            // The player can reject seeks until metadata has settled; scheduled retries cover that.
+        }
+    }
+
+    function scheduleUrlStartSeekFix(targetSeconds, href = location.href) {
+        if (!Number.isFinite(targetSeconds) || targetSeconds <= 0) return;
+
+        const seq = ++urlStartSeekSeq;
+        const startedAt = performance.now();
+        lastUrlStartSeekAt = startedAt;
+        activeUrlStartSeek = { seq, href, targetSeconds, startedAt, satisfiedAt: 0 };
+        for (const delay of URL_START_SEEK_RETRIES) {
+            setTimeout(() => enforceUrlStartSeek(targetSeconds, seq, startedAt), delay);
+        }
+        setTimeout(() => finishUrlStartSeek(seq), URL_START_SEEK_CLEANUP_MS);
+    }
+
+    function syncUrlStartSeekIntent() {
+        const href = location.href;
+        const targetSeconds = getUrlStartSeekSeconds();
+        if (!Number.isFinite(targetSeconds)) {
+            lastUrlStartSeekHref = href;
+            lastUrlStartSeekAt = 0;
+            if (activeUrlStartSeek) finishUrlStartSeek(activeUrlStartSeek.seq);
+            return;
+        }
+
+        if (
+            lastUrlStartSeekHref === href &&
+            activeUrlStartSeek?.targetSeconds === targetSeconds
+        ) {
+            return;
+        }
+
+        lastUrlStartSeekHref = href;
+        scheduleUrlStartSeekFix(targetSeconds, href);
+    }
+
     function enforceCommentTimelineSeek(targetSeconds, seq, clickedAt) {
         const state = activeCommentTimelineSeek;
         if (!state || state.seq !== seq || seq !== commentTimelineSeekSeq || !isVodRoute()) return;
@@ -215,8 +347,15 @@
             Boolean(target.closest("input, textarea, select, [contenteditable=''], [contenteditable='true']"));
     }
 
+    function isPlayerInteractionTarget(target) {
+        return target instanceof Element &&
+            Boolean(target.closest(PLAYER_INTERACTION_SELECTOR));
+    }
+
     function cancelCommentTimelineSeekOnUserIntent(event) {
-        if (!activeCommentTimelineSeek) return;
+        const shouldCancelUrlStartSeek = Boolean(activeUrlStartSeek) &&
+            (event.type === "keydown" || isPlayerInteractionTarget(event.target));
+        if (!activeCommentTimelineSeek && !shouldCancelUrlStartSeek) return;
 
         if (event.type === "keydown") {
             if (isEditableTarget(event.target)) return;
@@ -225,7 +364,11 @@
             }
         }
 
-        finishCommentTimelineSeek(activeCommentTimelineSeek.seq);
+        if (activeCommentTimelineSeek) finishCommentTimelineSeek(activeCommentTimelineSeek.seq);
+        if (shouldCancelUrlStartSeek && activeUrlStartSeek) {
+            lastUrlStartSeekAt = 0;
+            finishUrlStartSeek(activeUrlStartSeek.seq);
+        }
     }
 
 
@@ -251,6 +394,12 @@
 
     function syncAutoQualityState() {
         readAutoQualityState();
+        if (autoQualityEnabled) {
+            syncUrlStartSeekIntent();
+            installPageEventListeners();
+        } else {
+            uninstallPageEventListeners();
+        }
 
         if (!isPlaybackRoute()) {
             clearPageAutoApply();
@@ -258,6 +407,31 @@
         }
 
         if (!autoQualityEnabled) clearPageAutoApply();
+    }
+
+    function installPageEventListeners() {
+        if (pageEventListenersInstalled) return;
+        pageEventListenersInstalled = true;
+        document.addEventListener("click", handleCommentTimelineClick, true);
+        document.addEventListener("pointerdown", cancelCommentTimelineSeekOnUserIntent, true);
+        document.addEventListener("mousedown", cancelCommentTimelineSeekOnUserIntent, true);
+        document.addEventListener("touchstart", cancelCommentTimelineSeekOnUserIntent, true);
+        window.addEventListener("keydown", cancelCommentTimelineSeekOnUserIntent, true);
+    }
+
+    function uninstallPageEventListeners() {
+        if (!pageEventListenersInstalled) return;
+        pageEventListenersInstalled = false;
+        if (activeCommentTimelineSeek) finishCommentTimelineSeek(activeCommentTimelineSeek.seq);
+        if (activeUrlStartSeek) {
+            lastUrlStartSeekAt = 0;
+            finishUrlStartSeek(activeUrlStartSeek.seq);
+        }
+        document.removeEventListener("click", handleCommentTimelineClick, true);
+        document.removeEventListener("pointerdown", cancelCommentTimelineSeekOnUserIntent, true);
+        document.removeEventListener("mousedown", cancelCommentTimelineSeekOnUserIntent, true);
+        document.removeEventListener("touchstart", cancelCommentTimelineSeekOnUserIntent, true);
+        window.removeEventListener("keydown", cancelCommentTimelineSeekOnUserIntent, true);
     }
 
     function rememberQualityTarget(target) {
@@ -374,10 +548,18 @@
         return wrapVideoTracksDescriptor(prop, descriptor);
     }
 
+    function safeWrapQualityDescriptor(prop, descriptor) {
+        try {
+            return wrapQualityDescriptor(prop, descriptor);
+        } catch (_) {
+            return descriptor;
+        }
+    }
+
     function installQualityTargetInterceptor() {
         try {
             Object.defineProperty = function(target, prop, descriptor) {
-                return nativeDefineProperty.call(Object, target, prop, wrapQualityDescriptor(prop, descriptor));
+                return nativeDefineProperty.call(Object, target, prop, safeWrapQualityDescriptor(prop, descriptor));
             };
         } catch (_) {
             // If the runtime blocks patching, the normal videoTracks path still runs.
@@ -390,10 +572,16 @@
                         return nativeDefineProperties.call(Object, target, descriptors);
                     }
 
-                    const nextDescriptors = {};
-                    for (const key of Reflect.ownKeys(descriptors)) {
-                        nextDescriptors[key] = wrapQualityDescriptor(key, descriptors[key]);
+                    let nextDescriptors = descriptors;
+                    try {
+                        nextDescriptors = {};
+                        for (const key of Reflect.ownKeys(descriptors)) {
+                            nextDescriptors[key] = wrapQualityDescriptor(key, descriptors[key]);
+                        }
+                    } catch (_) {
+                        nextDescriptors = descriptors;
                     }
+
                     return nativeDefineProperties.call(Object, target, nextDescriptors);
                 };
             } catch (_) {
@@ -404,7 +592,7 @@
         if (nativeReflectDefineProperty) {
             try {
                 Reflect.defineProperty = function(target, prop, descriptor) {
-                    return nativeReflectDefineProperty.call(Reflect, target, prop, wrapQualityDescriptor(prop, descriptor));
+                    return nativeReflectDefineProperty.call(Reflect, target, prop, safeWrapQualityDescriptor(prop, descriptor));
                 };
             } catch (_) {
                 // Reflect.defineProperty patching is opportunistic.
@@ -414,11 +602,6 @@
 
     installQualityTargetInterceptor();
     syncAutoQualityState();
-    document.addEventListener("click", handleCommentTimelineClick, true);
-    document.addEventListener("pointerdown", cancelCommentTimelineSeekOnUserIntent, true);
-    document.addEventListener("mousedown", cancelCommentTimelineSeekOnUserIntent, true);
-    document.addEventListener("touchstart", cancelCommentTimelineSeekOnUserIntent, true);
-    window.addEventListener("keydown", cancelCommentTimelineSeekOnUserIntent, true);
     window.addEventListener(STATE_EVENT, syncAutoQualityState);
     window.addEventListener("pageshow", syncAutoQualityState, true);
 
@@ -457,17 +640,7 @@
     }
 
     function findPlayerBySelectorOnly() {
-        const selectors = [
-            "pzp-pc",
-            "pzp-player",
-            "pzp-core-player",
-            "pzp-pc-player",
-            "[class*='pzp']",
-            "[id*='player']",
-            "[class*='player']",
-        ];
-
-        for (const selector of selectors) {
+        for (const selector of PLAYER_DISCOVERY_SELECTORS) {
             for (const el of document.querySelectorAll(selector)) {
                 if (hasQualityControlTarget(el)) return el;
             }
@@ -512,17 +685,7 @@
     }
 
     function findPlayerFromDocument(video) {
-        const selectors = [
-            "pzp-pc",
-            "pzp-player",
-            "pzp-core-player",
-            "pzp-pc-player",
-            "[class*='pzp']",
-            "[id*='player']",
-            "[class*='player']",
-        ];
-
-        for (const selector of selectors) {
+        for (const selector of PLAYER_DISCOVERY_SELECTORS) {
             for (const el of document.querySelectorAll(selector)) {
                 if (!hasQualityControlTarget(el)) continue;
                 if (elementContainsVideo(el, video) || overlapsVideo(el, video)) {
@@ -673,6 +836,7 @@
     function shouldRestorePlaybackTime(video, capturedTime) {
         if (!(video instanceof HTMLVideoElement) || !Number.isFinite(capturedTime) || capturedTime <= 0) return false;
         if (hasRecentCommentTimelineSeekIntent()) return false;
+        if (hasRecentUrlStartSeekIntent()) return false;
 
         const currentTime = Number(video.currentTime);
         if (!Number.isFinite(currentTime)) return true;
@@ -924,6 +1088,7 @@
         pageApplyDeadline = 0;
         removeTrackListListeners();
         observedTrackList = null;
+        stopPageObserver();
     }
 
     function schedulePageApply(delayMs) {
@@ -990,8 +1155,8 @@
         if (mutation.type !== "childList") return false;
         for (const node of mutation.addedNodes || []) {
             if (!(node instanceof Element)) continue;
-            if (node.matches("video, [class*='pzp'], [id*='player'], [class*='player']")) return true;
-            if (node.querySelector?.("video, [class*='pzp'], [id*='player'], [class*='player']")) return true;
+            if (node.matches(PLAYER_MUTATION_SELECTOR)) return true;
+            if (node.querySelector?.(PLAYER_MUTATION_SELECTOR)) return true;
         }
         return false;
     }
@@ -1011,6 +1176,12 @@
             childList: true,
             subtree: true,
         });
+    }
+
+    function stopPageObserver() {
+        if (!pageObserver) return;
+        pageObserver.disconnect();
+        pageObserver = null;
     }
 
     function readRequest() {
@@ -1046,6 +1217,7 @@
         if (!request?.requestId) return;
         preferredQuality = request.quality || DEFAULT_QUALITY;
         autoQualityEnabled = true;
+        syncUrlStartSeekIntent();
         ensurePageObserver();
 
         try {

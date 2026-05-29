@@ -2,6 +2,7 @@ const STORAGE_KEY = "betterChzzkLiveWatchHistory";
 const API_BASE = "https://api.chzzk.naver.com/service/v1/channels";
 const VIDEO_DETAIL_API_BASE = "https://api.chzzk.naver.com/service/v2/videos";
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const MIN_WATCH_SECONDS = 60;
 const WEEKDAY_LABELS = ["일", "월", "화", "수", "목", "금", "토"];
 const VIDEO_PAGE_SIZE = 30;
@@ -9,11 +10,15 @@ const REPLAY_LOOKUP_MAX_PAGES = 80;
 const FETCH_TIMEOUT_MS = 8000;
 const START_EXACT_TOLERANCE_MS = 20 * 60 * 1000;
 const START_LOOSE_TOLERANCE_MS = 3 * 60 * 60 * 1000;
-const TARGET_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const TARGET_WINDOW_MS = 7 * DAY_MS;
 const TITLE_HISTORY_MAX = 20;
 const MAX_REPLAY_LOOKUP_CACHE_ENTRIES = 80;
+const WATCH_RANGE_MERGE_GAP_MS = 2000;
+const DISPLAY_WATCH_RANGE_MERGE_GAP_MS = 5 * 60 * 1000;
+const SESSION_MERGE_GAP_MS = 60 * 1000;
 
 const storage = globalThis.chrome?.storage?.local;
+const pickArray = globalThis.BetterChzzk?.utils?.pickArray || (() => null);
 
 const noticeEl = document.getElementById("notice");
 const totalWatchTimeEl = document.getElementById("totalWatchTime");
@@ -26,6 +31,8 @@ const calendarFootEl = document.getElementById("calendarFoot");
 const listDescriptionEl = document.getElementById("listDescription");
 const historyListEl = document.getElementById("historyList");
 const historySearchEl = document.getElementById("historySearch");
+const historySortEl = document.getElementById("historySort");
+const historySortDirectionEl = document.getElementById("historySortDirection");
 const prevMonthButton = document.getElementById("prevMonth");
 const calendarRefreshButton = document.getElementById("calendarRefresh");
 const nextMonthButton = document.getElementById("nextMonth");
@@ -66,6 +73,19 @@ function cleanTitle(value) {
         .trim();
 }
 
+function escapeRegExp(value) {
+    return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function cleanEntryTitle(value, channelName = "") {
+    const title = cleanTitle(value);
+    const channel = cleanTitle(channelName);
+    if (!title || !channel) return title;
+
+    const match = title.match(new RegExp(`^${escapeRegExp(channel)}\\s*[-|:·]\\s*(.+)$`, "i"));
+    return match ? cleanTitle(match[1]) || title : title;
+}
+
 function trimMapToSize(map, maxSize) {
     while (map.size > maxSize) {
         const oldestKey = map.keys().next().value;
@@ -81,7 +101,7 @@ function touchMapEntry(map, key, value, maxSize) {
     return value;
 }
 
-function normalizeTitleHistory(value) {
+function normalizeTitleHistory(value, channelName = "") {
     const rows = Array.isArray(value) ? value : [];
     const byTitle = new Map();
 
@@ -91,9 +111,9 @@ function normalizeTitleHistory(value) {
         let lastSeenAt = 0;
 
         if (typeof row === "string") {
-            title = cleanTitle(row);
+            title = cleanEntryTitle(row, channelName);
         } else if (row && typeof row === "object") {
-            title = cleanTitle(pickString(row.title, row.name, row.value));
+            title = cleanEntryTitle(pickString(row.title, row.name, row.value), channelName);
             firstSeenAt = Number(row.firstSeenAt) || Number(row.seenAt) || Number(row.createdAt) || 0;
             lastSeenAt = Number(row.lastSeenAt) || Number(row.updatedAt) || firstSeenAt;
         }
@@ -119,12 +139,12 @@ function normalizeTitleHistory(value) {
 function addTitleHistory(target, title, firstSeenAt = Date.now(), lastSeenAt = firstSeenAt) {
     if (!target) return;
 
-    const clean = cleanTitle(title);
+    const clean = cleanEntryTitle(title, target.channelName);
     if (!clean || clean === "제목 없는 라이브") return;
 
     const first = Number(firstSeenAt) || Date.now();
     const last = Number(lastSeenAt) || first;
-    const history = normalizeTitleHistory(target.titleHistory);
+    const history = normalizeTitleHistory(target.titleHistory, target.channelName);
     const existing = history.find((row) => row.title === clean);
 
     if (existing) {
@@ -140,7 +160,10 @@ function addTitleHistory(target, title, firstSeenAt = Date.now(), lastSeenAt = f
 }
 
 function getEntryTitleRows(entry) {
-    const target = { titleHistory: normalizeTitleHistory(entry?.titleHistory) };
+    const target = {
+        channelName: entry?.channelName || "",
+        titleHistory: normalizeTitleHistory(entry?.titleHistory, entry?.channelName),
+    };
     addTitleHistory(target, entry?.title, entry?.firstWatchedAt || entry?.lastWatchedAt);
     return target.titleHistory || [];
 }
@@ -183,18 +206,193 @@ function formatMonthKey(year, month) {
     return `${year}-${String(month).padStart(2, "0")}`;
 }
 
+function parseDateKeyParts(dateKey) {
+    const parts = String(dateKey || "").split("-").map(Number);
+    if (parts.length !== 3 || parts.some((value) => !Number.isFinite(value))) return null;
+    return { year: parts[0], month: parts[1], day: parts[2] };
+}
+
+function getKstDayStartMsFromParts(parts) {
+    if (!parts) return NaN;
+    return Date.UTC(parts.year, parts.month - 1, parts.day) - KST_OFFSET_MS;
+}
+
+function getKstDayStartMs(dateKey) {
+    return getKstDayStartMsFromParts(parseDateKeyParts(dateKey));
+}
+
+function getKstMonthStartMs(year, month) {
+    return Date.UTC(year, month - 1, 1) - KST_OFFSET_MS;
+}
+
+function getNextKstDayStartMs(ms) {
+    const parts = getKstParts(ms);
+    return Date.UTC(parts.year, parts.month - 1, parts.day + 1) - KST_OFFSET_MS;
+}
+
+function mergeWatchRanges(ranges, mergeGapMs = WATCH_RANGE_MERGE_GAP_MS) {
+    const normalized = (Array.isArray(ranges) ? ranges : [])
+        .map((range) => {
+            const startAt = Math.round(Number(range?.startAt) || Number(range?.start) || 0);
+            const endAt = Math.round(Number(range?.endAt) || Number(range?.end) || 0);
+            return startAt > 0 && endAt > startAt ? { startAt, endAt } : null;
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
+
+    const merged = [];
+    for (const range of normalized) {
+        const last = merged[merged.length - 1];
+        if (last && range.startAt <= last.endAt + mergeGapMs) {
+            last.endAt = Math.max(last.endAt, range.endAt);
+        } else {
+            merged.push({ ...range });
+        }
+    }
+    return merged;
+}
+
+function normalizeWatchRanges(value, mergeGapMs = WATCH_RANGE_MERGE_GAP_MS) {
+    return mergeWatchRanges(value, mergeGapMs);
+}
+
+function sumWatchRanges(ranges) {
+    return mergeWatchRanges(ranges)
+        .reduce((sum, range) => sum + Math.max(0, range.endAt - range.startAt) / 1000, 0);
+}
+
+function getFallbackSessionWatchRange(session) {
+    const watchedSeconds = Math.max(0, Number(session?.watchedSeconds) || 0);
+    if (watchedSeconds <= 0) return null;
+
+    const durationMs = watchedSeconds * 1000;
+    let startAt = Number(session?.enteredAt) || Number(session?.startedAt) || 0;
+    let endAt = Number(session?.leftAt) || Number(session?.endedAt) || Number(session?.lastWatchedAt) || 0;
+
+    if (!endAt && startAt) endAt = startAt + durationMs;
+    if (!startAt && endAt) startAt = Math.max(0, endAt - durationMs);
+    if (!startAt || !endAt) return null;
+    if (endAt <= startAt) endAt = startAt + durationMs;
+    if (endAt - startAt > durationMs + WATCH_RANGE_MERGE_GAP_MS) {
+        startAt = Math.max(startAt, endAt - durationMs);
+    }
+    return endAt > startAt ? { startAt: Math.round(startAt), endAt: Math.round(endAt) } : null;
+}
+
+function getFallbackSessionWatchRangeForDate(session, dateKey, seconds) {
+    const bounds = getDateScopeBounds(dateKey);
+    const watchedSeconds = Math.max(0, Number(seconds) || 0);
+    if (!bounds || watchedSeconds <= 0) return null;
+
+    const durationMs = watchedSeconds * 1000;
+    const enteredAt = Number(session?.enteredAt) || Number(session?.startedAt) || 0;
+    const leftAt = Number(session?.leftAt) || Number(session?.endedAt) || Number(session?.lastWatchedAt) || 0;
+    let startAt = bounds.startMs;
+    let endAt = Math.min(bounds.endMs, startAt + durationMs);
+
+    if (leftAt >= bounds.startMs && leftAt <= bounds.endMs) {
+        endAt = leftAt;
+        startAt = Math.max(bounds.startMs, endAt - durationMs);
+    } else if (enteredAt >= bounds.startMs && enteredAt < bounds.endMs) {
+        startAt = enteredAt;
+        endAt = Math.min(bounds.endMs, startAt + durationMs);
+    }
+
+    return endAt > startAt ? { startAt: Math.round(startAt), endAt: Math.round(endAt) } : null;
+}
+
+function getFallbackSessionWatchRanges(session) {
+    const dailyEntries = Object.entries(normalizeDailySeconds(session?.dailySeconds));
+    if (dailyEntries.length) {
+        return mergeWatchRanges(
+            dailyEntries
+                .map(([dateKey, seconds]) => getFallbackSessionWatchRangeForDate(session, dateKey, seconds))
+                .filter(Boolean)
+        );
+    }
+
+    const fallback = getFallbackSessionWatchRange(session);
+    return fallback ? [fallback] : [];
+}
+
+function getSessionWatchRanges(session) {
+    const ranges = normalizeWatchRanges(session?.watchedRanges);
+    if (ranges.length) return ranges;
+    return getFallbackSessionWatchRanges(session);
+}
+
+function collectSessionWatchRanges(sessionDetails, scopeStartMs = -Infinity, scopeEndMs = Infinity) {
+    const ranges = [];
+    for (const session of sessionDetails || []) {
+        for (const range of getSessionWatchRanges(session)) {
+            const startAt = Math.max(range.startAt, scopeStartMs);
+            const endAt = Math.min(range.endAt, scopeEndMs);
+            if (endAt > startAt) ranges.push({ startAt, endAt });
+        }
+    }
+    return ranges;
+}
+
+function addRangeToRangesByDate(rangesByDate, range, scopeStartMs = -Infinity, scopeEndMs = Infinity) {
+    let cursor = Math.max(range.startAt, scopeStartMs);
+    const endAt = Math.min(range.endAt, scopeEndMs);
+    while (cursor < endAt) {
+        const dateKey = formatDateKey(getKstParts(cursor));
+        const next = Math.min(endAt, getNextKstDayStartMs(cursor));
+        if (next > cursor) {
+            if (!rangesByDate[dateKey]) rangesByDate[dateKey] = [];
+            rangesByDate[dateKey].push({ startAt: cursor, endAt: next });
+        }
+        cursor = next;
+    }
+}
+
+function sumRangesByDate(rangesByDate) {
+    const dailySeconds = {};
+    for (const [dateKey, ranges] of Object.entries(rangesByDate || {})) {
+        const seconds = sumWatchRanges(ranges);
+        if (seconds > 0) dailySeconds[dateKey] = seconds;
+    }
+    return dailySeconds;
+}
+
 function formatDateLabel(dateKey) {
     const parts = String(dateKey).split("-").map(Number);
     if (parts.length !== 3 || parts.some((value) => !Number.isFinite(value))) return dateKey;
     return `${parts[0]}.${String(parts[1]).padStart(2, "0")}.${String(parts[2]).padStart(2, "0")}`;
 }
 
-function formatKstDateTime(ms) {
+function formatKstDateTime(ms, { seconds = false } = {}) {
     const parts = getKstParts(ms);
     const date = new Date(Number(ms) + KST_OFFSET_MS);
     const hours = String(date.getUTCHours()).padStart(2, "0");
     const minutes = String(date.getUTCMinutes()).padStart(2, "0");
-    return `${parts.year}.${String(parts.month).padStart(2, "0")}.${String(parts.day).padStart(2, "0")} ${hours}:${minutes}`;
+    const secondText = seconds ? `:${String(date.getUTCSeconds()).padStart(2, "0")}` : "";
+    return `${parts.year}.${String(parts.month).padStart(2, "0")}.${String(parts.day).padStart(2, "0")} ${hours}:${minutes}${secondText}`;
+}
+
+function formatKstTime(ms, { seconds = false } = {}) {
+    const date = new Date(Number(ms) + KST_OFFSET_MS);
+    const hours = String(date.getUTCHours()).padStart(2, "0");
+    const minutes = String(date.getUTCMinutes()).padStart(2, "0");
+    const secondText = seconds ? `:${String(date.getUTCSeconds()).padStart(2, "0")}` : "";
+    return `${hours}:${minutes}${secondText}`;
+}
+
+function isSameKstDate(a, b) {
+    const first = getKstParts(a);
+    const second = getKstParts(b);
+    return first.year === second.year && first.month === second.month && first.day === second.day;
+}
+
+function formatWatchRange(range) {
+    const startAt = Number(range?.startAt) || 0;
+    const endAt = Number(range?.endAt) || 0;
+    if (startAt <= 0 || endAt <= startAt) return "";
+    const showSeconds = endAt - startAt < 60 * 1000 || formatKstDateTime(startAt) === formatKstDateTime(endAt);
+    const formatOptions = { seconds: showSeconds };
+    const endText = isSameKstDate(startAt, endAt) ? formatKstTime(endAt, formatOptions) : formatKstDateTime(endAt, formatOptions);
+    return `${formatKstDateTime(startAt, formatOptions)} - ${endText}`;
 }
 
 function parseChzzkDate(value) {
@@ -242,6 +440,53 @@ function normalizeDailySeconds(value) {
     );
 }
 
+function mergeSessionDailySeconds(target, source) {
+    const next = target && typeof target === "object" ? target : {};
+    for (const [dateKey, seconds] of Object.entries(source && typeof source === "object" ? source : {})) {
+        const value = Math.max(0, Number(seconds) || 0);
+        if (value <= 0) continue;
+        next[dateKey] = Math.max(0, Number(next[dateKey]) || 0) + value;
+    }
+    return next;
+}
+
+function mergeContinuousSessionDetails(sessionDetails) {
+    const merged = [];
+    const rows = (Array.isArray(sessionDetails) ? sessionDetails : [])
+        .filter((session) => session && typeof session === "object")
+        .map((session) => ({
+            ...session,
+            enteredAt: Number(session.enteredAt) || 0,
+            leftAt: Number(session.leftAt) || Number(session.enteredAt) || 0,
+            watchedSeconds: Math.max(0, Number(session.watchedSeconds) || 0),
+            dailySeconds: normalizeDailySeconds(session.dailySeconds),
+            watchedRanges: normalizeWatchRanges(session.watchedRanges),
+        }))
+        .filter((session) => session.id && session.enteredAt > 0 && session.watchedSeconds >= MIN_WATCH_SECONDS)
+        .sort((a, b) => a.enteredAt - b.enteredAt || a.leftAt - b.leftAt);
+
+    for (const session of rows) {
+        const last = merged[merged.length - 1];
+        const lastLeftAt = Number(last?.leftAt) || Number(last?.enteredAt) || 0;
+        const shouldMerge = last && lastLeftAt > 0 && session.enteredAt <= lastLeftAt + SESSION_MERGE_GAP_MS;
+
+        if (!shouldMerge) {
+            merged.push(session);
+            continue;
+        }
+
+        if (session.title) last.title = session.title;
+        last.leftAt = Math.max(lastLeftAt, Number(session.leftAt) || session.enteredAt);
+        last.watchedSeconds = Math.max(0, Number(last.watchedSeconds) || 0) + session.watchedSeconds;
+        last.dailySeconds = mergeSessionDailySeconds(last.dailySeconds, session.dailySeconds);
+        last.watchedRanges = mergeWatchRanges([...(last.watchedRanges || []), ...(session.watchedRanges || [])]);
+        last.closed = last.closed === true && session.closed === true;
+        last.legacy = last.legacy === true && session.legacy === true;
+    }
+
+    return merged.sort((a, b) => b.enteredAt - a.enteredAt);
+}
+
 function normalizeSessionDetails(row, fallbackEntry) {
     const rawSessions = Array.isArray(row.sessionDetails) ? row.sessionDetails : [];
     const hasRawSessions = Array.isArray(row.sessionDetails);
@@ -250,14 +495,16 @@ function normalizeSessionDetails(row, fallbackEntry) {
         .map((session) => {
             const enteredAt = Number(session.enteredAt) || Number(session.startedAt) || 0;
             const leftAt = Number(session.leftAt) || Number(session.endedAt) || Number(session.lastWatchedAt) || 0;
-            const watchedSeconds = Math.max(0, Number(session.watchedSeconds) || 0);
+            const watchedRanges = normalizeWatchRanges(session.watchedRanges);
+            const watchedSeconds = Math.max(0, Number(session.watchedSeconds) || sumWatchRanges(watchedRanges));
             return {
                 id: pickString(session.id) || `${enteredAt}:${leftAt}`,
-                title: pickString(session.title),
+                title: cleanEntryTitle(pickString(session.title), fallbackEntry?.channelName),
                 enteredAt,
                 leftAt,
                 watchedSeconds,
                 dailySeconds: normalizeDailySeconds(session.dailySeconds),
+                watchedRanges,
                 closed: session.closed === true,
                 legacy: false,
             };
@@ -265,45 +512,33 @@ function normalizeSessionDetails(row, fallbackEntry) {
         .filter((session) => session.id && session.enteredAt > 0 && session.watchedSeconds >= MIN_WATCH_SECONDS);
 
     if (sessions.length) {
-        return sessions.sort((a, b) => b.enteredAt - a.enteredAt);
+        return mergeContinuousSessionDetails(sessions);
     }
 
     if (hasRawSessions || !fallbackEntry || fallbackEntry.watchedSeconds < MIN_WATCH_SECONDS) return [];
     return [{
         id: `legacy:${fallbackEntry.id}`,
-        title: fallbackEntry.title || "",
+        title: cleanEntryTitle(fallbackEntry.title, fallbackEntry.channelName) || "",
         enteredAt: fallbackEntry.firstWatchedAt || fallbackEntry.lastWatchedAt,
         leftAt: fallbackEntry.lastWatchedAt || fallbackEntry.firstWatchedAt,
         watchedSeconds: fallbackEntry.watchedSeconds,
         dailySeconds: { ...fallbackEntry.dailySeconds },
+        watchedRanges: [],
         closed: true,
         legacy: true,
     }];
 }
 
 function sumSessionSeconds(sessionDetails) {
-    return (sessionDetails || []).reduce((sum, session) => sum + Math.max(0, Number(session.watchedSeconds) || 0), 0);
+    return sumWatchRanges(collectSessionWatchRanges(sessionDetails));
 }
 
 function buildDailySecondsFromSessions(sessionDetails) {
-    const dailySeconds = {};
-    for (const session of sessionDetails || []) {
-        const dailyEntries = Object.entries(session.dailySeconds || {});
-        if (dailyEntries.length) {
-            for (const [dateKey, seconds] of dailyEntries) {
-                const value = Math.max(0, Number(seconds) || 0);
-                if (value <= 0) continue;
-                dailySeconds[dateKey] = (Number(dailySeconds[dateKey]) || 0) + value;
-            }
-            continue;
-        }
-
-        if (session.enteredAt > 0 && session.watchedSeconds > 0) {
-            const dateKey = formatDateKey(getKstParts(session.enteredAt));
-            dailySeconds[dateKey] = (Number(dailySeconds[dateKey]) || 0) + session.watchedSeconds;
-        }
+    const rangesByDate = {};
+    for (const range of collectSessionWatchRanges(sessionDetails)) {
+        addRangeToRangesByDate(rangesByDate, range);
     }
-    return dailySeconds;
+    return sumRangesByDate(rangesByDate);
 }
 
 function getSessionFirstWatchedAt(sessionDetails) {
@@ -330,14 +565,15 @@ function normalizeHistory(raw) {
         .filter((row) => row && typeof row === "object")
         .map((row) => {
             const id = pickString(row.id);
+            const channelName = pickString(row.channelName) || "알 수 없는 채널";
             const entry = {
                 id,
                 channelId: pickString(row.channelId),
                 liveId: pickString(row.liveId),
                 replayVideoNo: pickString(row.replayVideoNo, row.videoNo, row.videoId),
-                title: pickString(row.title) || "제목 없는 라이브",
-                titleHistory: normalizeTitleHistory(row.titleHistory),
-                channelName: pickString(row.channelName) || "알 수 없는 채널",
+                title: cleanEntryTitle(pickString(row.title), channelName) || "제목 없는 라이브",
+                titleHistory: normalizeTitleHistory(row.titleHistory, channelName),
+                channelName,
                 liveOpenDate: pickString(row.liveOpenDate),
                 liveUrl: pickString(row.liveUrl),
                 firstWatchedAt: Number(row.firstWatchedAt) || 0,
@@ -463,18 +699,6 @@ function removeEntryIdsFromRawHistory(raw, ids) {
     source.version = Number(source.version) || 1;
     source.updatedAt = Date.now();
     return source;
-}
-
-function pickArray(obj) {
-    if (!obj || typeof obj !== "object") return null;
-    if (Array.isArray(obj)) return obj;
-    for (const key of ["data", "videos", "list", "items", "content"]) {
-        if (Array.isArray(obj[key])) return obj[key];
-    }
-    for (const value of Object.values(obj)) {
-        if (Array.isArray(value) && value.length && typeof value[0] === "object") return value;
-    }
-    return null;
 }
 
 function extractReplayVideos(json) {
@@ -721,35 +945,100 @@ function getEntrySecondsForDate(entry, dateKey) {
     return Math.max(0, Number(entry.dailySeconds?.[dateKey]) || 0);
 }
 
+function getDateScopeBounds(dateKey) {
+    const startMs = getKstDayStartMs(dateKey);
+    return Number.isFinite(startMs) ? { startMs, endMs: startMs + DAY_MS } : null;
+}
+
+function getMonthScopeBounds(year, month) {
+    return {
+        startMs: getKstMonthStartMs(year, month),
+        endMs: getKstMonthStartMs(year, month + 1),
+    };
+}
+
+function getSessionSecondsForScope(session, startMs, endMs) {
+    return sumWatchRanges(collectSessionWatchRanges([session], startMs, endMs));
+}
+
+function getUniqueWatchSecondsForScope(startMs = -Infinity, endMs = Infinity) {
+    return entries.reduce((sum, entry) => {
+        return sum + sumWatchRanges(collectSessionWatchRanges(entry.sessionDetails, startMs, endMs));
+    }, 0);
+}
+
+function getUniqueWatchSecondsForMonth(year, month) {
+    const { startMs, endMs } = getMonthScopeBounds(year, month);
+    return getUniqueWatchSecondsForScope(startMs, endMs);
+}
+
 function getSessionSecondsForDate(session, dateKey) {
-    const seconds = Math.max(0, Number(session.dailySeconds?.[dateKey]) || 0);
-    if (seconds > 0) return seconds;
-    if (Object.keys(session.dailySeconds || {}).length) return 0;
-    return formatDateKey(getKstParts(session.enteredAt)) === dateKey ? session.watchedSeconds : 0;
+    const bounds = getDateScopeBounds(dateKey);
+    return bounds ? getSessionSecondsForScope(session, bounds.startMs, bounds.endMs) : 0;
 }
 
 function getSessionSecondsForMonth(session, year, month) {
-    const monthKey = formatMonthKey(year, month);
-    const dailyEntries = Object.entries(session.dailySeconds || {});
-    if (dailyEntries.length) {
-        return dailyEntries
-            .filter(([key]) => key.startsWith(monthKey))
-            .reduce((sum, [, seconds]) => sum + Math.max(0, Number(seconds) || 0), 0);
-    }
-    const parts = getKstParts(session.enteredAt);
-    return parts.year === year && parts.month === month ? session.watchedSeconds : 0;
+    const { startMs, endMs } = getMonthScopeBounds(year, month);
+    return getSessionSecondsForScope(session, startMs, endMs);
 }
 
 function getEntrySessionsForScope(entry) {
+    const bounds = selectedDateKey
+        ? getDateScopeBounds(selectedDateKey)
+        : getMonthScopeBounds(selectedYear, selectedMonth);
+
     return (entry.sessionDetails || [])
         .map((session) => {
-            const seconds = selectedDateKey
-                ? getSessionSecondsForDate(session, selectedDateKey)
-                : getSessionSecondsForMonth(session, selectedYear, selectedMonth);
-            return { ...session, scopeSeconds: seconds };
+            const scopeRanges = bounds
+                ? mergeWatchRanges(collectSessionWatchRanges([session], bounds.startMs, bounds.endMs))
+                : [];
+            return {
+                ...session,
+                scopeSeconds: sumWatchRanges(scopeRanges),
+                scopeRanges,
+            };
         })
         .filter((session) => session.scopeSeconds > 0)
         .sort((a, b) => b.enteredAt - a.enteredAt);
+}
+
+function getSessionLatestScopeWatchedAt(session) {
+    return mergeWatchRanges(session?.scopeRanges)
+        .reduce((latest, range) => Math.max(latest, Number(range.endAt) || 0), 0);
+}
+
+function getRowActualWatchedAt(row) {
+    const latest = (row?.sessionsForScope || [])
+        .reduce((max, session) => Math.max(max, getSessionLatestScopeWatchedAt(session)), 0);
+    return latest || Number(row?.entry?.lastWatchedAt) || 0;
+}
+
+function getHistorySortMode() {
+    return historySortEl?.value === "actualTime" ? "actualTime" : "watchTime";
+}
+
+function getHistorySortDirection() {
+    return historySortDirectionEl?.value === "asc" ? "asc" : "desc";
+}
+
+function compareNumberByDirection(a, b) {
+    const direction = getHistorySortDirection() === "asc" ? 1 : -1;
+    return (a - b) * direction;
+}
+
+function compareVisibleRows(a, b) {
+    if (getHistorySortMode() === "actualTime") {
+        return (
+            compareNumberByDirection(getRowActualWatchedAt(a), getRowActualWatchedAt(b)) ||
+            compareNumberByDirection(a.seconds, b.seconds) ||
+            compareNumberByDirection(a.entry.lastWatchedAt, b.entry.lastWatchedAt)
+        );
+    }
+    return (
+        compareNumberByDirection(a.seconds, b.seconds) ||
+        compareNumberByDirection(getRowActualWatchedAt(a), getRowActualWatchedAt(b)) ||
+        compareNumberByDirection(a.entry.lastWatchedAt, b.entry.lastWatchedAt)
+    );
 }
 
 function getMonthEntries() {
@@ -765,10 +1054,14 @@ function getDayEntries(dateKey) {
 
 function getDayTotals(year, month) {
     const totals = {};
+    const { startMs, endMs } = getMonthScopeBounds(year, month);
     for (const entry of entries) {
-        for (const [dateKey, seconds] of Object.entries(entry.dailySeconds || {})) {
-            if (!dateKey.startsWith(formatMonthKey(year, month))) continue;
-            totals[dateKey] = (totals[dateKey] || 0) + Math.max(0, Number(seconds) || 0);
+        const rangesByDate = {};
+        for (const range of collectSessionWatchRanges(entry.sessionDetails, startMs, endMs)) {
+            addRangeToRangesByDate(rangesByDate, range, startMs, endMs);
+        }
+        for (const [dateKey, seconds] of Object.entries(sumRangesByDate(rangesByDate))) {
+            totals[dateKey] = (Number(totals[dateKey]) || 0) + Math.max(0, Number(seconds) || 0);
         }
     }
     return totals;
@@ -866,8 +1159,7 @@ function renderCalendar() {
 
     calendarDaysEl.replaceChildren(fragment);
 
-    const monthSeconds = getMonthEntries()
-        .reduce((sum, entry) => sum + getEntrySecondsForMonth(entry, selectedYear, selectedMonth), 0);
+    const monthSeconds = getUniqueWatchSecondsForMonth(selectedYear, selectedMonth);
     const selectedText = selectedDateKey ? `${formatDateLabel(selectedDateKey)} 선택됨 · 다시 누르면 해제됩니다.` : "날짜를 선택하면 해당 날짜에 본 라이브만 표시합니다.";
     calendarFootEl.textContent = `${selectedText} 이번 달 총 ${formatDuration(monthSeconds)}.`;
 }
@@ -888,7 +1180,7 @@ function getVisibleRows() {
             const haystack = `${getEntryTitles(row.entry).join(" ")} ${row.entry.channelName}`.toLowerCase();
             return haystack.includes(query);
         })
-        .sort((a, b) => b.seconds - a.seconds || b.entry.lastWatchedAt - a.entry.lastWatchedAt);
+        .sort(compareVisibleRows);
 }
 
 function pruneSelectedEntryIds() {
@@ -969,6 +1261,20 @@ function openUrlInNewTab(url, pendingWindow = null) {
     window.open(url, "_blank", "noopener");
 }
 
+function openPendingReplayWindow() {
+    const pendingUrl = globalThis.chrome?.runtime?.getURL
+        ? chrome.runtime.getURL("replay-pending.html")
+        : "";
+
+    try {
+        const pendingWindow = window.open(pendingUrl || "", "_blank");
+        if (pendingWindow) pendingWindow.opener = null;
+        return pendingWindow;
+    } catch (_) {
+        return null;
+    }
+}
+
 async function handleTitleClick(event, entry) {
     const replayUrl = getReplayUrl(entry);
     if (replayUrl) return;
@@ -977,15 +1283,18 @@ async function handleTitleClick(event, entry) {
     event.preventDefault();
 
     let pendingWindow = null;
-    try {
-        pendingWindow = window.open("", "_blank");
-        if (pendingWindow) {
-            pendingWindow.opener = null;
-            pendingWindow.document.title = "다시보기 찾는 중";
-            pendingWindow.document.body.textContent = "다시보기를 찾는 중입니다...";
+    pendingWindow = openPendingReplayWindow();
+    if (!pendingWindow) {
+        try {
+            pendingWindow = window.open("", "_blank");
+            if (pendingWindow) {
+                pendingWindow.opener = null;
+                pendingWindow.document.title = "다시보기 찾는 중";
+                pendingWindow.document.body.textContent = "다시보기를 찾는 중입니다...";
+            }
+        } catch (_) {
+            pendingWindow = null;
         }
-    } catch (_) {
-        pendingWindow = null;
     }
 
     resolvingReplayEntryIds.add(entry.id);
@@ -1089,6 +1398,37 @@ function buildTitleHistoryList(entry) {
     return list;
 }
 
+function hasStoredWatchRanges(session) {
+    return normalizeWatchRanges(session?.watchedRanges).length > 0;
+}
+
+function buildSessionWatchRangeList(session) {
+    const exactRanges = mergeWatchRanges(session?.scopeRanges);
+    const ranges = mergeWatchRanges(exactRanges, DISPLAY_WATCH_RANGE_MERGE_GAP_MS);
+    if (!ranges.length) return null;
+
+    const wrap = document.createElement("div");
+    wrap.className = "history-watch-range-list";
+
+    const heading = document.createElement("span");
+    heading.className = "history-watch-range-heading";
+    heading.textContent = hasStoredWatchRanges(session) ? "시청 시간대" : "추정 시청 시간대";
+
+    const values = document.createElement("span");
+    values.className = "history-watch-range-values";
+
+    const rangeTexts = ranges.map(formatWatchRange).filter(Boolean);
+    const visible = rangeTexts.slice(0, 4);
+    if (rangeTexts.length > visible.length) {
+        visible.push(`외 ${rangeTexts.length - visible.length}개`);
+    }
+    values.textContent = visible.join(" · ");
+    values.title = rangeTexts.join("\n");
+
+    wrap.append(heading, values);
+    return wrap;
+}
+
 function buildSessionList(row) {
     const list = document.createElement("div");
     list.className = "history-session-list";
@@ -1103,6 +1443,9 @@ function buildSessionList(row) {
         appendSessionCell(item, session.legacy ? "이전 기록" : "입장", formatKstDateTime(session.enteredAt));
         appendSessionCell(item, "퇴장", session.legacy ? "세부 시간 없음" : formatSessionLeftText(session));
         appendSessionCell(item, "시청", formatDuration(session.scopeSeconds));
+
+        const rangeList = buildSessionWatchRangeList(session);
+        if (rangeList) item.appendChild(rangeList);
 
         list.appendChild(item);
     }
@@ -1210,9 +1553,8 @@ function renderList() {
 }
 
 function renderSummary() {
-    const totalSeconds = entries.reduce((sum, entry) => sum + entry.watchedSeconds, 0);
-    const monthSeconds = getMonthEntries()
-        .reduce((sum, entry) => sum + getEntrySecondsForMonth(entry, selectedYear, selectedMonth), 0);
+    const totalSeconds = getUniqueWatchSecondsForScope();
+    const monthSeconds = getUniqueWatchSecondsForMonth(selectedYear, selectedMonth);
 
     totalWatchTimeEl.textContent = formatDuration(totalSeconds);
     totalLiveCountEl.textContent = `${entries.length}개`;
@@ -1358,6 +1700,8 @@ nextMonthButton.addEventListener("click", () => {
 refreshButton.addEventListener("click", refreshHistory);
 clearHistoryButton.addEventListener("click", clearHistory);
 historySearchEl.addEventListener("input", renderList);
+historySortEl.addEventListener("change", renderList);
+historySortDirectionEl.addEventListener("change", renderList);
 selectVisibleHistoryEl.addEventListener("change", () => setVisibleEntriesSelected(selectVisibleHistoryEl.checked));
 deleteSelectedHistoryButton.addEventListener("click", deleteSelectedEntries);
 
