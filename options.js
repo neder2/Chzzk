@@ -8,6 +8,7 @@ const messageEl = document.getElementById("message");
 
 const {
     DEFAULT_OPTIONS,
+    FEATURE_KEYS,
     OPTION_KEYS,
     normalizeOptions,
 } = BetterChzzkSettings;
@@ -50,17 +51,7 @@ function isDirty(options) {
 }
 
 function getEnabledFeatureCount(options) {
-    return [
-        options.autoQualityEnabled,
-        options.skipControlEnabled,
-        options.vodBroadcastClockEnabled,
-        options.timeMachineLagLabelEnabled,
-        options.adblockPopupEnabled,
-        options.monthlyBroadcastTimeEnabled,
-        options.liveWatchHistoryEnabled,
-        options.videoSearchEnabled,
-        options.categoryToolsEnabled,
-    ].filter(Boolean).length;
+    return FEATURE_KEYS.filter((key) => Boolean(options[key])).length;
 }
 
 function dependenciesMet(group, options) {

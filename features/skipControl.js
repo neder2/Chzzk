@@ -27,6 +27,7 @@
     const LIVE_RESUME_ALLOWED_DRIFT_SECONDS = 1.5;
     const { DEFAULT_SKIP_SECONDS, normalizeSkipSeconds, normalizeOptions } = BetterChzzkSettings;
     const {
+        bindFeatureOptions,
         createThrottledDomSync,
         isVisible,
         mutationMatchesSelector,
@@ -232,28 +233,6 @@
             centerY <= videoRect.bottom + CONTROL_AREA_AFTER_VIDEO_BOTTOM;
 
         return horizontallyInsideVideo && nearVideoBottom && elRect.height <= CONTROL_AREA_MAX_HEIGHT;
-    }
-
-    function findLiveEdgeButton() {
-        if (!isLiveRoute()) return null;
-
-        const video = getMainVideoElement();
-        if (!(video instanceof HTMLVideoElement) || !isVisible?.(video)) return null;
-
-        const candidates = [];
-        for (const button of document.querySelectorAll(BUTTON_SELECTOR)) {
-            if (!(button instanceof HTMLElement)) continue;
-            if (!looksLikeLiveEdgeButton(button)) continue;
-            if (getVisibleArea(button) <= 0) continue;
-            if (!isInLikelyVideoControlArea(button, video)) continue;
-
-            const patchedScore = button.hasAttribute(LIVE_EDGE_PATCHED_ATTR) ? 2 : 0;
-            candidates.push({ button, score: patchedScore, area: getVisibleArea(button) });
-        }
-
-        if (!candidates.length) return null;
-        candidates.sort((a, b) => b.score - a.score || b.area - a.area);
-        return candidates[0].button;
     }
 
     function findPillAnchorElement() {
@@ -980,8 +959,7 @@
         }
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     onReady(() => {
         installLiveResumeGlobalHandlers();

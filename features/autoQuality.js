@@ -18,7 +18,7 @@
     const PLAYBACK_ROUTE_RE = /^\/(?:live|video)(?:\/|$)/;
 
     let featureOptions = BetterChzzkSettings.normalizeOptions();
-    let preferredQuality = BetterChzzkSettings.DEFAULT_QUALITY;
+    const preferredQuality = BetterChzzkSettings.DEFAULT_QUALITY;
     let lastUrl = location.href;
     let pageChangeTimer = 0;
     let applyTimer = 0;
@@ -33,6 +33,7 @@
     let requestSeq = 0;
 
     const {
+        bindFeatureOptions,
         createThrottledDomSync,
         mutationMatchesSelector,
         onReady,
@@ -289,8 +290,7 @@
         clearAutoQualityTimers();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
     window.addEventListener(ADBLOCK_READY_EVENT, markAdblockReady);
 
     onReady(() => {

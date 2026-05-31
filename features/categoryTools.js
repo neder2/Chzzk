@@ -20,7 +20,6 @@
 
     const API_BASE = "https://api.chzzk.naver.com/service";
     const API_PAGE_SIZE = 50;
-    const FETCH_TIMEOUT_MS = 12000;
     const MAX_FOLLOWER_CACHE_ENTRIES = 1000;
     const DEFAULT_PROFILE_IMAGE_URL = "data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2080%2080'%3E%3Crect%20width='80'%20height='80'%20rx='40'%20fill='%23E7EAEE'/%3E%3Ccircle%20cx='40'%20cy='31'%20r='14'%20fill='%239DA5B6'/%3E%3Cpath%20d='M18%2068c3-15%2015-24%2022-24s19%209%2022%2024'%20fill='%239DA5B6'/%3E%3C/svg%3E";
     const FOLLOWER_FILTER_PRESET_KEYS = Object.freeze([
@@ -89,11 +88,15 @@
     const followerInflight = new Map();
     const loadingReasons = new Set();
     const {
+        bindFeatureOptions,
+        createMutationObserverSync,
+        fetchJson,
         normSpace,
         normalizeCompact: normalize,
         onReady,
         setLoadingReason,
         sleep,
+        startPageChangeDetection,
     } = BetterChzzk.utils;
 
     function isFeatureEnabled() {
@@ -1302,22 +1305,6 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
         return `${API_BASE}/v2/categories/${type}/${id}/${route.tab}?${params.toString()}`;
     }
 
-    async function fetchJson(url) {
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-        try {
-            const res = await fetch(url, {
-                credentials: "include",
-                headers: { Accept: "application/json" },
-                signal: controller.signal,
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return res.json();
-        } finally {
-            window.clearTimeout(timer);
-        }
-    }
-
     function queueFollowerHydrationPass() {
         if (followerHydrateTimer) return;
         followerHydrateTimer = window.setTimeout(() => {
@@ -1415,7 +1402,7 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
         const key = routeKey(route);
         metadataLoading = {
             key,
-            promise: fetchJson(apiUrl(route, cursor))
+            promise: fetchJson(apiUrl(route, cursor), { headers: { Accept: "application/json" } })
                 .then((json) => {
                     if (metadataKey !== key) return metadataMap;
                     return mergeMetadataPage(route, json);
@@ -1448,7 +1435,9 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
         }
         if (followerInflight.has(channelId)) return followerInflight.get(channelId);
 
-        const promise = fetchJson(`${API_BASE}/v1/channels/${encodeURIComponent(channelId)}`)
+        const promise = fetchJson(`${API_BASE}/v1/channels/${encodeURIComponent(channelId)}`, {
+            headers: { Accept: "application/json" },
+        })
             .then((json) => {
                 const count = Number(json?.content?.followerCount) || 0;
                 touchMapEntry(followerCache, channelId, count, MAX_FOLLOWER_CACHE_ENTRIES);
@@ -3310,43 +3299,39 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
 
     function startObserver() {
         if (observer) return;
-        observer = new MutationObserver((mutations) => {
-            const route = getRoute();
-            if (location.href !== lastUrl) {
-                lastUrl = location.href;
-                if (route) removeTools();
-                else removeToolsIfMounted();
-            }
-            if (!isFeatureEnabled() || !route) return;
-            let onlyOurMutations = true;
-            for (const mutation of mutations) {
-                if (!isOurMutation(mutation)) {
-                    onlyOurMutations = false;
-                    break;
+        observer = createMutationObserverSync({
+            target: () => document.body || document.documentElement,
+            options: {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: [
+                    TABS_ATTR,
+                    CARD_ATTR,
+                    CARD_ID_ATTR,
+                    INJECTED_ATTR,
+                    HIDE_ATTR,
+                    HIDDEN_TAG_SEARCH_ATTR,
+                    TAG_SEARCH_ANCHOR_ATTR,
+                    ORDER_ATTR,
+                    EMPTY_ATTR,
+                    FOLLOWER_BADGE_ATTR,
+                    FOLLOWER_BADGE_WRAP_ATTR,
+                    LIVE_ELAPSED_BADGE_ATTR,
+                    LIVE_THUMB_HOST_ATTR,
+                ],
+            },
+            onMutations: () => {
+                const route = getRoute();
+                if (location.href !== lastUrl) {
+                    lastUrl = location.href;
+                    if (route) removeTools();
+                    else removeToolsIfMounted();
                 }
-            }
-            if (onlyOurMutations) return;
-            scheduleApply();
-        });
-        observer.observe(document.body || document.documentElement, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: [
-                TABS_ATTR,
-                CARD_ATTR,
-                CARD_ID_ATTR,
-                INJECTED_ATTR,
-                HIDE_ATTR,
-                HIDDEN_TAG_SEARCH_ATTR,
-                TAG_SEARCH_ANCHOR_ATTR,
-                ORDER_ATTR,
-                EMPTY_ATTR,
-                FOLLOWER_BADGE_ATTR,
-                FOLLOWER_BADGE_WRAP_ATTR,
-                LIVE_ELAPSED_BADGE_ATTR,
-                LIVE_THUMB_HOST_ATTR,
-            ],
+            },
+            shouldIgnoreMutations: (mutations) => mutations.every(isOurMutation),
+            shouldSchedule: () => isFeatureEnabled() && Boolean(getRoute()),
+            schedule: scheduleApply,
         });
     }
 
@@ -3376,8 +3361,7 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
         scheduleApply();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     document.addEventListener("click", (event) => {
         const bar = document.getElementById(BAR_ID);
@@ -3395,8 +3379,7 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
         startObserver();
         scheduleApply();
         document.addEventListener("visibilitychange", handleVisibilityChange, true);
-        window.addEventListener("popstate", scheduleApply, true);
-        window.addEventListener("hashchange", scheduleApply, true);
+        startPageChangeDetection(scheduleApply);
         window.addEventListener("resize", handleViewportChange, true);
         window.addEventListener("scroll", handleScrollPositionMenu, true);
     });
