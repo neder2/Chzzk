@@ -15,6 +15,8 @@
     const WATCH_HISTORY_STORAGE_KEY = "betterChzzkLiveWatchHistory";
     const WATCH_MATCH_START_TOLERANCE_MS = 60 * 60 * 1000;
     const WATCH_MATCH_OVERLAP_GRACE_MS = 10 * 60 * 1000;
+    const WATCH_RANGE_MERGE_GAP_MS = 2000;
+    const SESSION_MERGE_GAP_MS = 60 * 1000;
     const MAX_STATS_CACHE_CHANNELS = 8;
     const MAX_MONTH_CACHE_ENTRIES = 36;
     const MAX_PAGE_CACHE_CHANNELS = 8;
@@ -52,6 +54,11 @@
     let watchHistoryLoaded = false;
     let watchHistoryLoading = false;
     let watchHistoryRerenderTimer = 0;
+    let runtimeInstalled = false;
+    let routeListenersInstalled = false;
+    let calendarCloseListenerInstalled = false;
+    let storageListenerInstalled = false;
+    let removePageChangeDetection = null;
     const {
         bindFeatureOptions,
         createMutationObserverSync,
@@ -437,11 +444,26 @@ body[theme="dark"] #${WIDGET_ID}:hover,
   background:transparent;
 }
 #${WIDGET_ID} .bcmb-calendar-foot{
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) auto;
+  align-items:end;
+  gap:8px;
   margin-top:10px;
   color:#697183;
   font-size:11px;
   font-weight:800;
   line-height:15px;
+}
+#${WIDGET_ID} .bcmb-calendar-foot-note{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+#${WIDGET_ID} .bcmb-calendar-watch-total{
+  color:#00a86b;
+  font-weight:900;
+  text-align:right;
+  white-space:nowrap;
 }
 #${WIDGET_ID} .bcmb-calendar[data-loading="1"] .bcmb-days{
   opacity:0.42;
@@ -572,15 +594,26 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
         widget.addEventListener("mouseenter", () => flushDeferredCalendarRerender(widget));
         widget.addEventListener("focusin", () => flushDeferredCalendarRerender(widget));
 
-        if (!window.__betterChzzkMonthlyCalendarCloseInstalled) {
-            window.__betterChzzkMonthlyCalendarCloseInstalled = true;
-            document.addEventListener("click", (event) => {
-                const current = document.getElementById(WIDGET_ID);
-                if (!current || current.contains(event.target)) return;
-                if (current.getAttribute("data-open") !== "1") return;
-                setCalendarOpen(current, false);
-            }, true);
-        }
+        installCalendarCloseListener();
+    }
+
+    function handleCalendarDocumentClick(event) {
+        const current = document.getElementById(WIDGET_ID);
+        if (!current || current.contains(event.target)) return;
+        if (current.getAttribute("data-open") !== "1") return;
+        setCalendarOpen(current, false);
+    }
+
+    function installCalendarCloseListener() {
+        if (calendarCloseListenerInstalled) return;
+        calendarCloseListenerInstalled = true;
+        document.addEventListener("click", handleCalendarDocumentClick, true);
+    }
+
+    function uninstallCalendarCloseListener() {
+        if (!calendarCloseListenerInstalled) return;
+        calendarCloseListenerInstalled = false;
+        document.removeEventListener("click", handleCalendarDocumentClick, true);
     }
 
     function setCalendarOpen(widget, open) {
@@ -921,47 +954,215 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
         );
     }
 
+    function getNextKstDayStartMs(ms) {
+        const parts = getKstParts(ms);
+        return Date.UTC(parts.year, parts.month - 1, parts.day + 1) - KST_OFFSET_MS;
+    }
+
+    function getWatchDateScopeBounds(dateKey) {
+        const parts = String(dateKey || "").split("-").map(Number);
+        if (parts.length !== 3 || parts.some((value) => !Number.isFinite(value))) return null;
+        const startMs = Date.UTC(parts[0], parts[1] - 1, parts[2]) - KST_OFFSET_MS;
+        return { startMs, endMs: startMs + DAY_MS };
+    }
+
+    function mergeWatchRanges(ranges) {
+        const normalized = (Array.isArray(ranges) ? ranges : [])
+            .map((range) => {
+                const startAt = Math.round(Number(range?.startAt) || Number(range?.start) || 0);
+                const endAt = Math.round(Number(range?.endAt) || Number(range?.end) || 0);
+                return startAt > 0 && endAt > startAt ? { startAt, endAt } : null;
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
+
+        const merged = [];
+        for (const range of normalized) {
+            const last = merged[merged.length - 1];
+            if (last && range.startAt <= last.endAt + WATCH_RANGE_MERGE_GAP_MS) {
+                last.endAt = Math.max(last.endAt, range.endAt);
+            } else {
+                merged.push({ ...range });
+            }
+        }
+        return merged;
+    }
+
+    function normalizeWatchRanges(value) {
+        return mergeWatchRanges(value);
+    }
+
+    function sumWatchRanges(ranges) {
+        return mergeWatchRanges(ranges)
+            .reduce((sum, range) => sum + Math.max(0, range.endAt - range.startAt) / 1000, 0);
+    }
+
+    function getFallbackWatchSessionRange(session) {
+        const watchedSeconds = Math.max(0, Number(session?.watchedSeconds) || 0);
+        if (watchedSeconds <= 0) return null;
+
+        const durationMs = watchedSeconds * 1000;
+        let startAt = Number(session?.enteredAt) || Number(session?.startedAt) || 0;
+        let endAt = Number(session?.leftAt) || Number(session?.endedAt) || Number(session?.lastWatchedAt) || 0;
+
+        if (!endAt && startAt) endAt = startAt + durationMs;
+        if (!startAt && endAt) startAt = Math.max(0, endAt - durationMs);
+        if (!startAt || !endAt) return null;
+        if (endAt <= startAt) endAt = startAt + durationMs;
+        if (endAt - startAt > durationMs + WATCH_RANGE_MERGE_GAP_MS) {
+            startAt = Math.max(startAt, endAt - durationMs);
+        }
+        return endAt > startAt ? { startAt: Math.round(startAt), endAt: Math.round(endAt) } : null;
+    }
+
+    function getFallbackWatchSessionRangeForDate(session, dateKey, seconds) {
+        const bounds = getWatchDateScopeBounds(dateKey);
+        const watchedSeconds = Math.max(0, Number(seconds) || 0);
+        if (!bounds || watchedSeconds <= 0) return null;
+
+        const durationMs = watchedSeconds * 1000;
+        const enteredAt = Number(session?.enteredAt) || Number(session?.startedAt) || 0;
+        const leftAt = Number(session?.leftAt) || Number(session?.endedAt) || Number(session?.lastWatchedAt) || 0;
+        let startAt = bounds.startMs;
+        let endAt = Math.min(bounds.endMs, startAt + durationMs);
+
+        if (leftAt >= bounds.startMs && leftAt <= bounds.endMs) {
+            endAt = leftAt;
+            startAt = Math.max(bounds.startMs, endAt - durationMs);
+        } else if (enteredAt >= bounds.startMs && enteredAt < bounds.endMs) {
+            startAt = enteredAt;
+            endAt = Math.min(bounds.endMs, startAt + durationMs);
+        }
+
+        return endAt > startAt ? { startAt: Math.round(startAt), endAt: Math.round(endAt) } : null;
+    }
+
+    function getFallbackWatchSessionRanges(session) {
+        const dailyEntries = Object.entries(normalizeWatchDailySeconds(session?.dailySeconds));
+        if (dailyEntries.length) {
+            return mergeWatchRanges(
+                dailyEntries
+                    .map(([dateKey, seconds]) => getFallbackWatchSessionRangeForDate(session, dateKey, seconds))
+                    .filter(Boolean)
+            );
+        }
+
+        const fallback = getFallbackWatchSessionRange(session);
+        return fallback ? [fallback] : [];
+    }
+
+    function getWatchSessionRanges(session) {
+        const ranges = normalizeWatchRanges(session?.watchedRanges);
+        if (ranges.length) return ranges;
+        return getFallbackWatchSessionRanges(session);
+    }
+
+    function collectWatchSessionRanges(sessionDetails) {
+        const ranges = [];
+        for (const session of sessionDetails || []) {
+            ranges.push(...getWatchSessionRanges(session));
+        }
+        return ranges;
+    }
+
+    function addWatchRangeToRangesByDate(rangesByDate, range) {
+        let cursor = range.startAt;
+        while (cursor < range.endAt) {
+            const dateKey = formatDateKey(getKstParts(cursor));
+            const next = Math.min(range.endAt, getNextKstDayStartMs(cursor));
+            if (next > cursor) {
+                if (!rangesByDate[dateKey]) rangesByDate[dateKey] = [];
+                rangesByDate[dateKey].push({ startAt: cursor, endAt: next });
+            }
+            cursor = next;
+        }
+    }
+
+    function sumWatchRangesByDate(rangesByDate) {
+        const dailySeconds = {};
+        for (const [dateKey, ranges] of Object.entries(rangesByDate || {})) {
+            const seconds = sumWatchRanges(ranges);
+            if (seconds > 0) dailySeconds[dateKey] = seconds;
+        }
+        return dailySeconds;
+    }
+
+    function mergeWatchSessionDailySeconds(target, source) {
+        const next = target && typeof target === "object" ? target : {};
+        for (const [dateKey, seconds] of Object.entries(source && typeof source === "object" ? source : {})) {
+            const value = Math.max(0, Number(seconds) || 0);
+            if (value <= 0) continue;
+            next[dateKey] = Math.max(0, Number(next[dateKey]) || 0) + value;
+        }
+        return next;
+    }
+
+    function mergeContinuousWatchSessionDetails(sessionDetails) {
+        const merged = [];
+        const rows = (Array.isArray(sessionDetails) ? sessionDetails : [])
+            .filter((session) => session && typeof session === "object")
+            .map((session) => ({
+                ...session,
+                enteredAt: Number(session.enteredAt) || 0,
+                leftAt: Number(session.leftAt) || Number(session.enteredAt) || 0,
+                watchedSeconds: Math.max(0, Number(session.watchedSeconds) || 0),
+                dailySeconds: normalizeWatchDailySeconds(session.dailySeconds),
+                watchedRanges: normalizeWatchRanges(session.watchedRanges),
+            }))
+            .filter((session) => session.id && session.enteredAt > 0 && session.watchedSeconds >= MINUTE_SECONDS)
+            .sort((a, b) => a.enteredAt - b.enteredAt || a.leftAt - b.leftAt);
+
+        for (const session of rows) {
+            const last = merged[merged.length - 1];
+            const lastLeftAt = Number(last?.leftAt) || Number(last?.enteredAt) || 0;
+            const shouldMerge = last && lastLeftAt > 0 && session.enteredAt <= lastLeftAt + SESSION_MERGE_GAP_MS;
+
+            if (!shouldMerge) {
+                merged.push(session);
+                continue;
+            }
+
+            last.leftAt = Math.max(lastLeftAt, Number(session.leftAt) || session.enteredAt);
+            last.watchedSeconds = Math.max(0, Number(last.watchedSeconds) || 0) + session.watchedSeconds;
+            last.dailySeconds = mergeWatchSessionDailySeconds(last.dailySeconds, session.dailySeconds);
+            last.watchedRanges = mergeWatchRanges([...(last.watchedRanges || []), ...(session.watchedRanges || [])]);
+        }
+
+        return merged;
+    }
+
     function normalizeWatchSessionDetails(value) {
         if (!Array.isArray(value)) return [];
-        return value
+        const sessions = value
             .filter((session) => session && typeof session === "object")
             .map((session) => {
                 const enteredAt = Number(session.enteredAt) || Number(session.startedAt) || 0;
                 const leftAt = Number(session.leftAt) || Number(session.endedAt) || Number(session.lastWatchedAt) || 0;
+                const watchedRanges = normalizeWatchRanges(session.watchedRanges);
                 return {
                     id: normSpace(session.id) || `${enteredAt}:${leftAt}`,
                     enteredAt,
                     leftAt,
-                    watchedSeconds: Math.max(0, Number(session.watchedSeconds) || 0),
+                    watchedSeconds: Math.max(0, Number(session.watchedSeconds) || sumWatchRanges(watchedRanges)),
                     dailySeconds: normalizeWatchDailySeconds(session.dailySeconds),
+                    watchedRanges,
                 };
             })
             .filter((session) => session.id && session.enteredAt > 0 && session.watchedSeconds >= MINUTE_SECONDS);
+
+        return mergeContinuousWatchSessionDetails(sessions);
     }
 
     function sumWatchSessionSeconds(sessionDetails) {
-        return (sessionDetails || []).reduce((sum, session) => sum + Math.max(0, Number(session.watchedSeconds) || 0), 0);
+        return sumWatchRanges(collectWatchSessionRanges(sessionDetails));
     }
 
     function buildWatchDailySeconds(sessionDetails) {
-        const dailySeconds = {};
-        for (const session of sessionDetails || []) {
-            const dailyEntries = Object.entries(session.dailySeconds || {});
-            if (dailyEntries.length) {
-                for (const [dateKey, seconds] of dailyEntries) {
-                    const value = Math.max(0, Number(seconds) || 0);
-                    if (value <= 0) continue;
-                    dailySeconds[dateKey] = (Number(dailySeconds[dateKey]) || 0) + value;
-                }
-                continue;
-            }
-
-            if (session.enteredAt > 0 && session.watchedSeconds > 0) {
-                const dateKey = formatDateKey(getKstParts(session.enteredAt));
-                dailySeconds[dateKey] = (Number(dailySeconds[dateKey]) || 0) + session.watchedSeconds;
-            }
+        const rangesByDate = {};
+        for (const range of collectWatchSessionRanges(sessionDetails)) {
+            addWatchRangeToRangesByDate(rangesByDate, range);
         }
-        return dailySeconds;
+        return sumWatchRangesByDate(rangesByDate);
     }
 
     function getWatchSessionFirstWatchedAt(sessionDetails) {
@@ -1120,6 +1321,14 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
             seconds: clampedSeconds,
             percent,
         };
+    }
+
+    function getChannelWatchSeconds(channelId) {
+        if (!channelId) return 0;
+        return watchHistoryEntries.reduce((sum, entry) => {
+            if (entry.channelId !== channelId) return sum;
+            return sum + Math.max(0, Number(entry.watchedSeconds) || 0);
+        }, 0);
     }
 
     function formatWatchPercent(percent) {
@@ -1768,7 +1977,8 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
     }
 
     function buildCalendarWatchRenderKey(month) {
-        return Object.entries(month?.startsByDate || {})
+        const totalWatchKey = Math.round(getChannelWatchSeconds(currentChannelId));
+        const startWatchKey = Object.entries(month?.startsByDate || {})
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([key, starts]) => {
                 const rows = Array.isArray(starts) ? [...starts] : [];
@@ -1779,6 +1989,7 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
                 }).join(";")}`;
             })
             .join("|");
+        return `${totalWatchKey}|${startWatchKey}`;
     }
 
     function renderCalendar(widget, month, { force = false } = {}) {
@@ -1863,7 +2074,19 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
         }
 
         daysEl.replaceChildren(fragment);
-        footEl.textContent = month.partial ? "일부 기록만 표시됨" : "방송 시작일 기준 · KST";
+        renderCalendarFoot(footEl, month);
+    }
+
+    function renderCalendarFoot(footEl, month) {
+        const noteEl = document.createElement("span");
+        noteEl.className = "bcmb-calendar-foot-note";
+        noteEl.textContent = month.partial ? "일부 기록만 표시됨" : "방송 시작일 기준 · KST";
+
+        const totalEl = document.createElement("span");
+        totalEl.className = "bcmb-calendar-watch-total";
+        totalEl.textContent = `내 채널 누적 ${formatDuration(getChannelWatchSeconds(currentChannelId))}`;
+
+        footEl.replaceChildren(noteEl, totalEl);
     }
 
     function buildDayTipContent(month, day, starts) {
@@ -2015,6 +2238,80 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
         });
     }
 
+    function stopObserver() {
+        if (!observer) return;
+        observer.disconnect();
+        observer = null;
+    }
+
+    function installRouteListeners() {
+        if (routeListenersInstalled) return;
+        routeListenersInstalled = true;
+        removePageChangeDetection = startPageChangeDetection(schedule);
+        window.addEventListener("resize", schedule, true);
+    }
+
+    function uninstallRouteListeners() {
+        if (!routeListenersInstalled) return;
+        routeListenersInstalled = false;
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
+        window.removeEventListener("resize", schedule, true);
+    }
+
+    function handleWatchHistoryStorageChange(changes, areaName) {
+        if (areaName !== "local" || !changes[WATCH_HISTORY_STORAGE_KEY]) return;
+        watchHistoryEntries = normalizeWatchHistory(changes[WATCH_HISTORY_STORAGE_KEY].newValue);
+        watchHistoryLoaded = true;
+        scheduleWatchHistoryRerender({ deferWhenVisible: true });
+    }
+
+    function installStorageListener() {
+        if (storageListenerInstalled || !globalThis.chrome?.storage?.onChanged) return;
+        storageListenerInstalled = true;
+        chrome.storage.onChanged.addListener(handleWatchHistoryStorageChange);
+    }
+
+    function uninstallStorageListener() {
+        if (!storageListenerInstalled || !globalThis.chrome?.storage?.onChanged) return;
+        storageListenerInstalled = false;
+        chrome.storage.onChanged.removeListener(handleWatchHistoryStorageChange);
+    }
+
+    function clearRuntimeTimers() {
+        scheduled = false;
+        if (scheduleFallbackTimer) {
+            window.clearTimeout(scheduleFallbackTimer);
+            scheduleFallbackTimer = 0;
+        }
+        if (watchHistoryRerenderTimer) {
+            window.clearTimeout(watchHistoryRerenderTimer);
+            watchHistoryRerenderTimer = 0;
+        }
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        installRouteListeners();
+        installStorageListener();
+        startObserver();
+        refreshWatchHistory({ rerender: false });
+        schedule();
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        clearRuntimeTimers();
+        stopObserver();
+        uninstallRouteListeners();
+        uninstallCalendarCloseListener();
+        uninstallStorageListener();
+        removeWidgetIfMounted();
+    }
+
     function applyOptions(options) {
         const prev = featureOptions;
         featureOptions = options;
@@ -2031,9 +2328,11 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
         }
 
         if (!isFeatureEnabled()) {
-            removeWidgetIfMounted();
+            teardownRuntime();
             return;
         }
+
+        installRuntime();
 
         if (!isChannelRoute()) {
             removeWidgetIfMounted();
@@ -2049,20 +2348,8 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
     }
 
     bindFeatureOptions(applyOptions);
-    if (globalThis.chrome?.storage?.onChanged) {
-        chrome.storage.onChanged.addListener((changes, areaName) => {
-            if (areaName !== "local" || !changes[WATCH_HISTORY_STORAGE_KEY]) return;
-            watchHistoryEntries = normalizeWatchHistory(changes[WATCH_HISTORY_STORAGE_KEY].newValue);
-            watchHistoryLoaded = true;
-            scheduleWatchHistoryRerender({ deferWhenVisible: true });
-        });
-    }
 
     onReady(() => {
-        refreshWatchHistory({ rerender: false });
-        startObserver();
-        schedule();
-        startPageChangeDetection(schedule);
-        window.addEventListener("resize", schedule, true);
+        if (isFeatureEnabled()) installRuntime();
     });
 })();

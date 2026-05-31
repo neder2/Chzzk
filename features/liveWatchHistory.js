@@ -7,11 +7,13 @@
     const METADATA_REFRESH_MS = 60000;
     const FETCH_TIMEOUT_MS = 10000;
     const MAX_TICK_SECONDS = 10;
-    const MIN_SESSION_SECONDS = 60;
+    const STORAGE_MIN_SESSION_SECONDS = 60;
     const HISTORY_MAX_ENTRIES = 2000;
     const HISTORY_MAX_SESSION_DETAILS_PER_ENTRY = 300;
     const TITLE_HISTORY_MAX = 20;
     const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+    const WATCH_RANGE_MERGE_GAP_MS = 2000;
+    const SESSION_MERGE_GAP_MS = 60 * 1000;
 
     const storage = globalThis.chrome?.storage?.local;
     const { normalizeOptions } = BetterChzzkSettings;
@@ -36,6 +38,10 @@
     let metadataTimer = 0;
     let metadataRequestSeq = 0;
     let domObserver = null;
+    let bodyObserver = null;
+    let removePageChangeDetection = null;
+    let runtimeInstalled = false;
+    let lifecycleListenersInstalled = false;
     let flushInProgress = false;
     let flushAgainRequested = false;
 
@@ -43,6 +49,10 @@
 
     function isFeatureEnabled() {
         return Boolean(featureOptions.liveWatchHistoryEnabled);
+    }
+
+    function getMinSessionSeconds() {
+        return Math.max(1, Number(featureOptions.liveWatchHistoryMinMinutes) || 1) * 60;
     }
 
     function getLiveChannelIdFromUrl() {
@@ -93,6 +103,100 @@
         return `${year}-${month}-${day}`;
     }
 
+    function getNextKstDayStartMs(ms) {
+        const date = new Date(Number(ms) + KST_OFFSET_MS);
+        return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 1) - KST_OFFSET_MS;
+    }
+
+    function mergeWatchRanges(ranges) {
+        const normalized = (Array.isArray(ranges) ? ranges : [])
+            .map((range) => {
+                const startAt = Math.round(Number(range?.startAt) || Number(range?.start) || 0);
+                const endAt = Math.round(Number(range?.endAt) || Number(range?.end) || 0);
+                return startAt > 0 && endAt > startAt ? { startAt, endAt } : null;
+            })
+            .filter(Boolean)
+            .sort((a, b) => a.startAt - b.startAt || a.endAt - b.endAt);
+
+        const merged = [];
+        for (const range of normalized) {
+            const last = merged[merged.length - 1];
+            if (last && range.startAt <= last.endAt + WATCH_RANGE_MERGE_GAP_MS) {
+                last.endAt = Math.max(last.endAt, range.endAt);
+            } else {
+                merged.push({ ...range });
+            }
+        }
+        return merged;
+    }
+
+    function normalizeWatchRanges(value) {
+        return mergeWatchRanges(value);
+    }
+
+    function mergeSessionDailySeconds(target, source) {
+        const next = target && typeof target === "object" ? target : {};
+        for (const [dateKey, seconds] of Object.entries(source && typeof source === "object" ? source : {})) {
+            const value = Math.round(Number(seconds) || 0);
+            if (value <= 0) continue;
+            next[dateKey] = Math.max(0, Number(next[dateKey]) || 0) + value;
+        }
+        return next;
+    }
+
+    function mergeContinuousSessionDetails(sessionDetails, preferredSessionId = "") {
+        const merged = [];
+        const rows = (Array.isArray(sessionDetails) ? sessionDetails : [])
+            .filter((row) => row && typeof row === "object")
+            .map((row) => ({
+                ...row,
+                enteredAt: Number(row.enteredAt) || 0,
+                leftAt: Number(row.leftAt) || Number(row.enteredAt) || 0,
+                watchedSeconds: Math.max(0, Number(row.watchedSeconds) || 0),
+                dailySeconds: row.dailySeconds && typeof row.dailySeconds === "object" ? { ...row.dailySeconds } : {},
+                watchedRanges: normalizeWatchRanges(row.watchedRanges),
+            }))
+            .filter((row) => row.enteredAt > 0 && row.watchedSeconds > 0)
+            .sort((a, b) => a.enteredAt - b.enteredAt || a.leftAt - b.leftAt);
+
+        for (const row of rows) {
+            const last = merged[merged.length - 1];
+            const lastLeftAt = Number(last?.leftAt) || Number(last?.enteredAt) || 0;
+            const shouldMerge = last && lastLeftAt > 0 && row.enteredAt <= lastLeftAt + SESSION_MERGE_GAP_MS;
+
+            if (!shouldMerge) {
+                merged.push(row);
+                continue;
+            }
+
+            if (row.id === preferredSessionId) last.id = row.id;
+            if (row.title) last.title = row.title;
+            last.leftAt = Math.max(lastLeftAt, Number(row.leftAt) || row.enteredAt);
+            last.watchedSeconds = Math.max(0, Number(last.watchedSeconds) || 0) + row.watchedSeconds;
+            last.dailySeconds = mergeSessionDailySeconds(last.dailySeconds, row.dailySeconds);
+            last.watchedRanges = mergeWatchRanges([...(last.watchedRanges || []), ...(row.watchedRanges || [])]);
+            last.closed = last.closed === true && row.closed === true;
+        }
+
+        return merged.sort((a, b) => Number(b.enteredAt || 0) - Number(a.enteredAt || 0));
+    }
+
+    function addPendingRange(current, startAt, endAt) {
+        if (!current || endAt <= startAt) return;
+        current.pendingRanges = mergeWatchRanges([...(current.pendingRanges || []), { startAt, endAt }]);
+
+        let cursor = startAt;
+        while (cursor < endAt) {
+            const dateKey = getKstDateKey(cursor);
+            const next = Math.min(endAt, getNextKstDayStartMs(cursor));
+            const seconds = Math.max(0, (next - cursor) / 1000);
+            if (seconds > 0) {
+                current.pendingByDate[dateKey] = (Number(current.pendingByDate[dateKey]) || 0) + seconds;
+            }
+            cursor = next;
+        }
+    }
+
     function compactSpaces(value) {
         if (typeof normSpace === "function") return normSpace(value);
         return String(value || "").replace(/\s+/g, " ").trim();
@@ -113,7 +217,20 @@
             .trim();
     }
 
-    function normalizeTitleHistory(value) {
+    function escapeRegExp(value) {
+        return String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    }
+
+    function cleanEntryTitle(value, channelName = "") {
+        const title = cleanTitle(value);
+        const channel = cleanTitle(channelName);
+        if (!title || !channel) return title;
+
+        const match = title.match(new RegExp(`^${escapeRegExp(channel)}\\s*[-|:·]\\s*(.+)$`, "i"));
+        return match ? cleanTitle(match[1]) || title : title;
+    }
+
+    function normalizeTitleHistory(value, channelName = "") {
         const rows = Array.isArray(value) ? value : [];
         const byTitle = new Map();
 
@@ -123,9 +240,9 @@
             let lastSeenAt = 0;
 
             if (typeof row === "string") {
-                title = cleanTitle(row);
+                title = cleanEntryTitle(row, channelName);
             } else if (row && typeof row === "object") {
-                title = cleanTitle(pickString(row.title, row.name, row.value));
+                title = cleanEntryTitle(pickString(row.title, row.name, row.value), channelName);
                 firstSeenAt = Number(row.firstSeenAt) || Number(row.seenAt) || Number(row.createdAt) || 0;
                 lastSeenAt = Number(row.lastSeenAt) || Number(row.updatedAt) || firstSeenAt;
             }
@@ -151,12 +268,12 @@
     function addTitleHistory(target, title, firstSeenAt = Date.now(), lastSeenAt = firstSeenAt) {
         if (!target) return;
 
-        const clean = cleanTitle(title);
+        const clean = cleanEntryTitle(title, target.channelName);
         if (!clean || clean === "제목 없는 라이브") return;
 
         const first = Number(firstSeenAt) || Date.now();
         const last = Number(lastSeenAt) || first;
-        const history = normalizeTitleHistory(target.titleHistory);
+        const history = normalizeTitleHistory(target.titleHistory, target.channelName);
         const existing = history.find((row) => row.title === clean);
 
         if (existing) {
@@ -172,7 +289,7 @@
     }
 
     function mergeTitleHistory(target, sourceHistory) {
-        for (const row of normalizeTitleHistory(sourceHistory)) {
+        for (const row of normalizeTitleHistory(sourceHistory, target?.channelName)) {
             addTitleHistory(target, row.title, row.firstSeenAt, row.lastSeenAt);
         }
     }
@@ -195,7 +312,8 @@
 
     function inferMetadataFromPage(channelId) {
         const ogTitle = document.querySelector('meta[property="og:title"], meta[name="twitter:title"]')?.content;
-        const title = cleanTitle(pickString(ogTitle, document.title));
+        const channelName = inferChannelNameFromDom(channelId);
+        const title = cleanEntryTitle(pickString(ogTitle, document.title), channelName);
         const thumbnailUrl = pickString(
             document.querySelector('meta[property="og:image"], meta[name="twitter:image"]')?.content
         );
@@ -204,7 +322,7 @@
             channelId,
             liveId: "",
             title,
-            channelName: inferChannelNameFromDom(channelId),
+            channelName,
             thumbnailUrl,
             liveOpenDate: "",
             liveUrl: `${location.origin}${location.pathname}`,
@@ -219,12 +337,13 @@
         const content = normalizeApiContent(json);
         const live = content.live || content.liveDetail || {};
         const channel = content.channel || live.channel || {};
+        const channelName = pickString(content.channelName, channel.channelName, channel.name);
 
         return {
             channelId,
             liveId: pickString(content.liveId, content.liveNo, live.liveId, live.liveNo, content.id),
-            title: cleanTitle(pickString(content.liveTitle, content.title, live.liveTitle, live.title)),
-            channelName: pickString(content.channelName, channel.channelName, channel.name),
+            title: cleanEntryTitle(pickString(content.liveTitle, content.title, live.liveTitle, live.title), channelName),
+            channelName,
             thumbnailUrl: pickString(
                 content.liveImageUrl,
                 content.defaultThumbnailImageUrl,
@@ -239,11 +358,12 @@
 
     function mergeMetadata(target, metadata) {
         if (!target || !metadata) return;
-        for (const key of ["channelId", "liveId", "title", "channelName", "thumbnailUrl", "liveOpenDate", "liveUrl"]) {
+        const nextChannelName = pickString(metadata.channelName, target.channelName);
+        for (const key of ["channelId", "liveId", "channelName", "title", "thumbnailUrl", "liveOpenDate", "liveUrl"]) {
             const value = compactSpaces(metadata[key]);
             if (!value) continue;
             if (key === "title") {
-                const title = cleanTitle(value);
+                const title = cleanEntryTitle(value, nextChannelName);
                 if (title) {
                     target.title = title;
                     addTitleHistory(target, title);
@@ -303,12 +423,13 @@
             if (!row || typeof row !== "object") continue;
             const id = pickString(row.id);
             if (!id) continue;
+            const channelName = pickString(row.channelName) || "알 수 없는 채널";
             const entry = {
                 id,
                 channelId: pickString(row.channelId),
                 liveId: pickString(row.liveId),
-                title: pickString(row.title) || "제목 없는 라이브",
-                channelName: pickString(row.channelName) || "알 수 없는 채널",
+                title: cleanEntryTitle(pickString(row.title), channelName) || "제목 없는 라이브",
+                channelName,
                 thumbnailUrl: pickString(row.thumbnailUrl),
                 liveOpenDate: pickString(row.liveOpenDate),
                 liveUrl: pickString(row.liveUrl),
@@ -317,8 +438,8 @@
                 watchedSeconds: Math.max(0, Number(row.watchedSeconds) || 0),
                 sessions: Math.max(1, Math.round(Number(row.sessions) || 1)),
                 dailySeconds: row.dailySeconds && typeof row.dailySeconds === "object" ? { ...row.dailySeconds } : {},
-                sessionDetails: normalizeSessionDetails(row.sessionDetails),
-                titleHistory: normalizeTitleHistory(row.titleHistory),
+                sessionDetails: normalizeSessionDetails(row.sessionDetails, channelName),
+                titleHistory: normalizeTitleHistory(row.titleHistory, channelName),
             };
             const hasSessionDetails = Array.isArray(row.sessionDetails);
             if (hasSessionDetails) {
@@ -331,7 +452,7 @@
                 addTitleHistory(entry, detail.title, detail.enteredAt, detail.leftAt || detail.enteredAt);
             }
             addTitleHistory(entry, entry.title, entry.firstWatchedAt || entry.lastWatchedAt);
-            if (entry.watchedSeconds < MIN_SESSION_SECONDS) {
+            if (entry.watchedSeconds < STORAGE_MIN_SESSION_SECONDS) {
                 continue;
             }
             entries[id] = entry;
@@ -344,14 +465,14 @@
         };
     }
 
-    function normalizeSessionDetails(value) {
+    function normalizeSessionDetails(value, channelName = "") {
         if (!Array.isArray(value)) return [];
 
-        return value
+        const sessions = value
             .filter((row) => row && typeof row === "object")
             .map((row) => {
                 const id = pickString(row.id);
-                const title = cleanTitle(pickString(row.title, row.videoTitle, row.liveTitle, row.name));
+                const title = cleanEntryTitle(pickString(row.title, row.videoTitle, row.liveTitle, row.name), channelName);
                 const watchedSeconds = Math.max(0, Number(row.watchedSeconds) || 0);
                 const dailySeconds = row.dailySeconds && typeof row.dailySeconds === "object" ? { ...row.dailySeconds } : {};
                 return {
@@ -361,11 +482,13 @@
                     leftAt: Number(row.leftAt) || Number(row.endedAt) || Number(row.lastWatchedAt) || 0,
                     watchedSeconds,
                     dailySeconds,
+                    watchedRanges: normalizeWatchRanges(row.watchedRanges),
                     closed: row.closed === true,
                 };
             })
-            .filter((row) => row.id && row.enteredAt > 0 && row.watchedSeconds >= MIN_SESSION_SECONDS)
-            .sort((a, b) => Number(b.enteredAt || 0) - Number(a.enteredAt || 0));
+            .filter((row) => row.id && row.enteredAt > 0 && row.watchedSeconds >= STORAGE_MIN_SESSION_SECONDS);
+
+        return mergeContinuousSessionDetails(sessions);
     }
 
     function sumSessionSeconds(sessionDetails) {
@@ -464,12 +587,13 @@
     }
 
     function createEntry(id, current) {
+        const channelName = current.channelName || "알 수 없는 채널";
         const entry = {
             id,
             channelId: current.channelId || "",
             liveId: current.liveId || "",
-            title: current.title || "제목 없는 라이브",
-            channelName: current.channelName || "알 수 없는 채널",
+            title: cleanEntryTitle(current.title, channelName) || "제목 없는 라이브",
+            channelName,
             thumbnailUrl: current.thumbnailUrl || "",
             liveOpenDate: current.liveOpenDate || "",
             liveUrl: current.liveUrl || `${location.origin}${location.pathname}`,
@@ -479,7 +603,7 @@
             sessions: 0,
             dailySeconds: {},
             sessionDetails: [],
-            titleHistory: normalizeTitleHistory(current.titleHistory),
+            titleHistory: normalizeTitleHistory(current.titleHistory, channelName),
         };
         addTitleHistory(entry, entry.title, current.enteredAt || current.startedAt);
         return entry;
@@ -496,12 +620,23 @@
         return snapshot;
     }
 
+    function takePendingRangeSnapshot(current) {
+        const snapshot = normalizeWatchRanges(current.pendingRanges);
+        current.pendingRanges = [];
+        return snapshot;
+    }
+
     function restorePendingSnapshot(current, snapshot) {
         if (!current || !snapshot) return;
         for (const [dateKey, seconds] of Object.entries(snapshot)) {
             current.pendingByDate[dateKey] = (Number(current.pendingByDate[dateKey]) || 0) + seconds;
             current.pendingSeconds += seconds;
         }
+    }
+
+    function restorePendingRangeSnapshot(current, snapshot) {
+        if (!current || !snapshot?.length) return;
+        current.pendingRanges = mergeWatchRanges([...(snapshot || []), ...(current.pendingRanges || [])]);
     }
 
     function pendingTotal(snapshot) {
@@ -512,7 +647,7 @@
         return `${Date.now()}:${Math.random().toString(36).slice(2, 8)}`;
     }
 
-    function upsertSessionDetail(entry, current, deltaSeconds, snapshot) {
+    function upsertSessionDetail(entry, current, deltaSeconds, snapshot, rangeSnapshot) {
         entry.sessionDetails = Array.isArray(entry.sessionDetails) ? entry.sessionDetails : [];
 
         let detail = entry.sessionDetails.find((row) => row.id === current.sessionId);
@@ -524,6 +659,7 @@
                 leftAt: current.lastSeenAt || current.lastWatchedAt || Date.now(),
                 watchedSeconds: 0,
                 dailySeconds: {},
+                watchedRanges: [],
                 closed: false,
             };
             entry.sessionDetails.push(detail);
@@ -532,11 +668,15 @@
         if (current.title && !detail.title) detail.title = current.title;
         detail.leftAt = Math.max(Number(detail.leftAt) || 0, current.lastSeenAt || current.lastWatchedAt || Date.now());
         detail.closed = current.closed === true;
+        detail.watchedRanges = normalizeWatchRanges(detail.watchedRanges);
         if (deltaSeconds > 0) {
             detail.watchedSeconds = Math.max(0, Number(detail.watchedSeconds) || 0) + deltaSeconds;
             detail.dailySeconds = detail.dailySeconds && typeof detail.dailySeconds === "object" ? detail.dailySeconds : {};
             mergePending(detail.dailySeconds, snapshot);
+            detail.watchedRanges = mergeWatchRanges([...detail.watchedRanges, ...(rangeSnapshot || [])]);
         }
+
+        entry.sessionDetails = mergeContinuousSessionDetails(entry.sessionDetails, current.sessionId);
     }
 
     async function flushSession({ force = false } = {}) {
@@ -548,12 +688,24 @@
         accrueWatchTime();
 
         const current = session;
-        if (!current || !storage) return;
+        if (!current) return;
+        if (!storage) {
+            if (force && current.closed === true && session === current) {
+                session = null;
+            }
+            return;
+        }
 
         const totalWatched = Math.floor(current.watchedSeconds);
-        if (totalWatched < MIN_SESSION_SECONDS) return;
+        if (totalWatched < getMinSessionSeconds()) {
+            if (force && current.closed === true && session === current) {
+                session = null;
+            }
+            return;
+        }
 
         const snapshot = takePendingSnapshot(current);
+        const rangeSnapshot = takePendingRangeSnapshot(current);
         const deltaSeconds = pendingTotal(snapshot);
         const shouldUpdateSession = force && current.storageSessionRecorded;
         if (deltaSeconds <= 0 && !shouldUpdateSession) return;
@@ -563,18 +715,18 @@
 
         try {
             const id = getRecordId(current);
-            const countSession = !current.storageSessionRecorded;
             await mutateHistory((history) => {
                 const entry = history.entries[id] || createEntry(id, current);
 
                 entry.channelId = current.channelId || entry.channelId;
                 entry.liveId = current.liveId || entry.liveId;
+                entry.channelName = current.channelName || entry.channelName;
                 mergeTitleHistory(entry, current.titleHistory);
                 if (current.title) {
-                    addTitleHistory(entry, current.title, current.lastSeenAt || current.lastWatchedAt || Date.now());
-                    entry.title = current.title;
+                    const title = cleanEntryTitle(current.title, entry.channelName);
+                    addTitleHistory(entry, title, current.lastSeenAt || current.lastWatchedAt || Date.now());
+                    entry.title = title || entry.title;
                 }
-                entry.channelName = current.channelName || entry.channelName;
                 entry.thumbnailUrl = current.thumbnailUrl || entry.thumbnailUrl;
                 entry.liveOpenDate = current.liveOpenDate || entry.liveOpenDate;
                 entry.liveUrl = current.liveUrl || entry.liveUrl;
@@ -583,9 +735,8 @@
                 if (deltaSeconds > 0) entry.watchedSeconds = Math.max(0, Number(entry.watchedSeconds) || 0) + deltaSeconds;
                 entry.dailySeconds = entry.dailySeconds && typeof entry.dailySeconds === "object" ? entry.dailySeconds : {};
                 if (deltaSeconds > 0) mergePending(entry.dailySeconds, snapshot);
-                upsertSessionDetail(entry, current, deltaSeconds, snapshot);
-                if (countSession) entry.sessions = Math.max(Number(entry.sessions) || 0, entry.sessionDetails.length);
-                else entry.sessions = Math.max(Number(entry.sessions) || 0, entry.sessionDetails.length);
+                upsertSessionDetail(entry, current, deltaSeconds, snapshot, rangeSnapshot);
+                entry.sessions = Math.max(Number(entry.sessions) || 0, entry.sessionDetails.length);
 
                 history.entries[id] = entry;
             });
@@ -593,6 +744,7 @@
             if (session === current) current.storageSessionRecorded = true;
         } catch (_) {
             restorePendingSnapshot(current, snapshot);
+            restorePendingRangeSnapshot(current, rangeSnapshot);
         } finally {
             flushInProgress = false;
             const needsFollowUp = flushAgainRequested || (force && current.closed !== true);
@@ -615,11 +767,12 @@
 
         if (!shouldCountWatchTime(attachedVideo, current, deltaSeconds)) return;
 
-        const dateKey = getKstDateKey(Date.now());
+        const watchedAt = Date.now();
+        const rangeStartAt = Math.max(0, Math.round(watchedAt - deltaSeconds * 1000));
         current.watchedSeconds += deltaSeconds;
         current.pendingSeconds += deltaSeconds;
-        current.pendingByDate[dateKey] = (Number(current.pendingByDate[dateKey]) || 0) + deltaSeconds;
-        current.lastWatchedAt = Date.now();
+        addPendingRange(current, rangeStartAt, watchedAt);
+        current.lastWatchedAt = watchedAt;
         current.lastSeenAt = current.lastWatchedAt;
     }
 
@@ -640,6 +793,7 @@
             watchedSeconds: 0,
             pendingSeconds: 0,
             pendingByDate: {},
+            pendingRanges: [],
             storageSessionRecorded: false,
             lastTickAt: performance.now(),
             lastMediaTime: getVideoMediaTime(attachedVideo),
@@ -785,25 +939,81 @@
         });
     }
 
+    function stopDomObserver() {
+        if (domObserver) {
+            domObserver.disconnect();
+            domObserver = null;
+        }
+        if (bodyObserver) {
+            bodyObserver.disconnect();
+            bodyObserver = null;
+        }
+    }
+
+    function handleVisibilityChange() {
+        accrueWatchTime();
+        if (document.visibilityState === "hidden") void flushSession({ force: true });
+    }
+
+    function handlePageHide() {
+        accrueWatchTime();
+        void flushSession({ force: true });
+    }
+
+    function installLifecycleListeners() {
+        if (lifecycleListenersInstalled) return;
+        lifecycleListenersInstalled = true;
+        document.addEventListener("visibilitychange", handleVisibilityChange, true);
+        window.addEventListener("pagehide", handlePageHide, true);
+    }
+
+    function uninstallLifecycleListeners() {
+        if (!lifecycleListenersInstalled) return;
+        lifecycleListenersInstalled = false;
+        document.removeEventListener("visibilitychange", handleVisibilityChange, true);
+        window.removeEventListener("pagehide", handlePageHide, true);
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        installLifecycleListeners();
+        if (!removePageChangeDetection) {
+            removePageChangeDetection = startPageChangeDetection(syncTrackingState);
+        }
+        startDomObserver();
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        endSession();
+        detachVideo();
+        clearTimers();
+        stopDomObserver();
+        uninstallLifecycleListeners();
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
+    }
+
     function applyOptions(options) {
         featureOptions = options;
+        if (!isFeatureEnabled()) {
+            teardownRuntime();
+            return;
+        }
+
+        installRuntime();
         syncTrackingState();
     }
 
     bindFeatureOptions(applyOptions);
 
-    document.addEventListener("visibilitychange", () => {
-        accrueWatchTime();
-        if (document.visibilityState === "hidden") void flushSession({ force: true });
-    }, true);
-    window.addEventListener("pagehide", () => {
-        accrueWatchTime();
-        void flushSession({ force: true });
-    }, true);
-
     onReady(() => {
-        startPageChangeDetection(syncTrackingState);
-        startDomObserver();
-        syncTrackingState();
+        if (isFeatureEnabled()) {
+            installRuntime();
+            syncTrackingState();
+        }
     });
 })();

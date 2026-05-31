@@ -9,7 +9,7 @@
 <body>
     <main class="options-page history-page">
         <header class="hero">
-            <div class="brand-mark" aria-hidden="true">C</div>
+            <img class="brand-mark" src="icons/icon128.png" alt="" aria-hidden="true">
             <div>
                 <p class="eyebrow">Better Chzzk</p>
                 <h1>시청 기록</h1>
@@ -60,6 +60,14 @@
                     </div>
                     <div class="history-filter-row">
                         <input id="historySearch" type="search" placeholder="제목 또는 채널 검색" autocomplete="off">
+                        <select id="historySort" aria-label="정렬 기준">
+                            <option value="watchTime">시청시간 순</option>
+                            <option value="actualTime">실제시간 순</option>
+                        </select>
+                        <select id="historySortDirection" aria-label="정렬 방향">
+                            <option value="desc">내림차순</option>
+                            <option value="asc">오름차순</option>
+                        </select>
                         <button id="refresh" class="secondary-button" type="button">새로고침</button>
                         <button id="clearHistory" class="secondary-button danger-button" type="button">전체 삭제</button>
                     </div>
@@ -84,6 +92,7 @@
         <p id="message" class="message hidden" role="status" aria-live="polite"></p>
     </main>
 
+    <script src="shared/data.js"></script>
     <script src="history.js"></script>
 </body>
 </html>

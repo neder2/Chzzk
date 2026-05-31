@@ -7,6 +7,8 @@
     const MONTHLY_CALENDAR_MAX_PAGES = 300;
     const FILTER_PRESET_MIN = 1;
     const FILTER_PRESET_MAX = 10000000;
+    const LIVE_WATCH_HISTORY_MIN_MINUTES_MIN = 1;
+    const LIVE_WATCH_HISTORY_MIN_MINUTES_MAX = 1440;
 
     const OPTION_SCHEMA = Object.freeze({
         autoQualityEnabled: { kind: "bool", default: true, feature: true },
@@ -21,6 +23,7 @@
         skipWheelAltStep: { kind: "int", default: 10, min: 1, max: 600 },
         vodBroadcastClockEnabled: { kind: "bool", default: true, feature: true },
         timeMachineLagLabelEnabled: { kind: "bool", default: true, feature: true },
+        vodReplayChatFixEnabled: { kind: "bool", default: true, feature: true },
         adblockPopupEnabled: { kind: "bool", default: true, feature: true },
         monthlyBroadcastTimeEnabled: { kind: "bool", default: true, feature: true },
         monthlyBroadcastTimeWindowDays: { kind: "int", default: 30, min: 1, max: 365 },
@@ -33,6 +36,12 @@
             max: MONTHLY_CALENDAR_MAX_PAGES,
         },
         liveWatchHistoryEnabled: { kind: "bool", default: true, feature: true },
+        liveWatchHistoryMinMinutes: {
+            kind: "int",
+            default: 1,
+            min: LIVE_WATCH_HISTORY_MIN_MINUTES_MIN,
+            max: LIVE_WATCH_HISTORY_MIN_MINUTES_MAX,
+        },
         videoSearchEnabled: { kind: "bool", default: true, feature: true },
         videoSearchCommentEnabled: { kind: "bool", default: true },
         videoSearchMaxPages: { kind: "int", default: 80, min: 1, max: 200 },
@@ -92,6 +101,7 @@
         categoryToolsFollowerFetchDelayMs: { kind: "int", default: 700, min: 0, max: 5000 },
     });
 
+    const OPTION_SPEC = OPTION_SCHEMA;
     const OPTION_KEYS = Object.freeze(Object.keys(OPTION_SCHEMA));
     const FEATURE_KEYS = Object.freeze(OPTION_KEYS.filter((key) => OPTION_SCHEMA[key].feature));
     const DEFAULT_OPTIONS = Object.freeze(
@@ -210,6 +220,9 @@
         SKIP_MAX,
         MONTHLY_CALENDAR_MIN_PAGES,
         MONTHLY_CALENDAR_MAX_PAGES,
+        LIVE_WATCH_HISTORY_MIN_MINUTES_MIN,
+        LIVE_WATCH_HISTORY_MIN_MINUTES_MAX,
+        OPTION_SPEC,
         DEFAULT_OPTIONS,
         OPTION_KEYS,
         FEATURE_KEYS,

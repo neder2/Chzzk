@@ -80,6 +80,9 @@
     let lastListStateKey = "";
     let cachedGrid = null;
     let cachedGridKey = "";
+    let runtimeInstalled = false;
+    let globalListenersInstalled = false;
+    let removePageChangeDetection = null;
 
     const METADATA_APPLY_INTERVAL_MS = 260;
     const UI_YIELD_EVERY_ITEMS = 24;
@@ -3222,6 +3225,10 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
         scheduled = true;
         requestAnimationFrame(() => {
             scheduled = false;
+            if (!isFeatureEnabled() || !getRoute()) {
+                removeToolsIfMounted();
+                return;
+            }
             runApply();
         });
     }
@@ -3335,6 +3342,69 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
         });
     }
 
+    function stopObserver() {
+        if (!observer) return;
+        observer.disconnect();
+        observer = null;
+    }
+
+    function handleDocumentClick(event) {
+        const bar = document.getElementById(BAR_ID);
+        const menu = document.getElementById(MENU_ID);
+        if (!bar && !menu && getRoute()?.scope !== "global-lives") return;
+        handleGlobalSortClick(event);
+        if (
+            bar &&
+            !bar.contains(event.target) &&
+            (!menu || !menu.contains(event.target))
+        ) closeMenu();
+    }
+
+    function installGlobalListeners() {
+        if (globalListenersInstalled) return;
+        globalListenersInstalled = true;
+        document.addEventListener("click", handleDocumentClick, true);
+        document.addEventListener("visibilitychange", handleVisibilityChange, true);
+        removePageChangeDetection = startPageChangeDetection(scheduleApply);
+        window.addEventListener("resize", handleViewportChange, true);
+        window.addEventListener("scroll", handleScrollPositionMenu, true);
+    }
+
+    function uninstallGlobalListeners() {
+        if (!globalListenersInstalled) return;
+        globalListenersInstalled = false;
+        document.removeEventListener("click", handleDocumentClick, true);
+        document.removeEventListener("visibilitychange", handleVisibilityChange, true);
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
+        window.removeEventListener("resize", handleViewportChange, true);
+        window.removeEventListener("scroll", handleScrollPositionMenu, true);
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        startObserver();
+        installGlobalListeners();
+        scheduleApply();
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        scheduled = false;
+        applyQueued = false;
+        metadataSearchToken++;
+        metadataSearchRunning = false;
+        clearFollowerHydrationTimer();
+        clearLiveElapsedTimer();
+        clearLoading();
+        removeToolsIfMounted();
+        stopObserver();
+        uninstallGlobalListeners();
+    }
+
     function applyOptions(options) {
         const prev = featureOptions;
         featureOptions = options;
@@ -3347,9 +3417,11 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
         clearFollowerHydrationTimer();
 
         if (!isFeatureEnabled()) {
-            removeToolsIfMounted();
+            teardownRuntime();
             return;
         }
+
+        installRuntime();
 
         if (!getRoute()) {
             removeToolsIfMounted();
@@ -3363,24 +3435,7 @@ body[theme="dark"] #${MENU_ID} .bcgt-reset:hover:not(:disabled),
 
     bindFeatureOptions(applyOptions);
 
-    document.addEventListener("click", (event) => {
-        const bar = document.getElementById(BAR_ID);
-        const menu = document.getElementById(MENU_ID);
-        if (!bar && !menu && getRoute()?.scope !== "global-lives") return;
-        handleGlobalSortClick(event);
-        if (
-            bar &&
-            !bar.contains(event.target) &&
-            (!menu || !menu.contains(event.target))
-        ) closeMenu();
-    }, true);
-
     onReady(() => {
-        startObserver();
-        scheduleApply();
-        document.addEventListener("visibilitychange", handleVisibilityChange, true);
-        startPageChangeDetection(scheduleApply);
-        window.addEventListener("resize", handleViewportChange, true);
-        window.addEventListener("scroll", handleScrollPositionMenu, true);
+        if (isFeatureEnabled()) installRuntime();
     });
 })();
