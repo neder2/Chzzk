@@ -1,5 +1,6 @@
 (() => {
     const SKIP_PILL_ID = "betterchzzk-skip-pill";
+    const LIVE_FAST_FORWARD_BUTTON_ID = "betterchzzk-live-fast-forward";
     const SKIP_STYLE_ID = "betterchzzk-skip-style";
     const VOD_TIME_SELECTOR = "div.pzp-vod-time, div.pzp-pc__vod-time, div.pzp-pc-vod-time";
     const LIVE_TIME_SELECTOR = "div.pzp-live-time, div.pzp-pc__live-time, div.pzp-pc-live-time";
@@ -9,12 +10,18 @@
         "div.pzp-pc-bottom-buttons--left",
         "div[class*='pzp'][class*='bottom-buttons'][class*='left']",
     ].join(", ");
+    const LIVE_PLAYBACK_SWITCH_SELECTOR = [
+        ".pzp-pc__playback-switch",
+        ".pzp-pc-playback-switch",
+        "[class*='pzp'][class*='playback-switch']",
+    ].join(", ");
     const BUTTON_SELECTOR = "button, [role='button']";
     const LIVE_EDGE_PATCHED_ATTR = "data-bctm-text-patched";
     const LIVE_EDGE_BUTTON_TERMS = ["\uC2E4\uC2DC\uAC04", "\uB77C\uC774\uBE0C", "live"];
+    const LIVE_FAST_FORWARD_LABEL = "\uBE68\uB9AC \uAC10\uAE30";
     const LIVE_ROUTE_RE = /^\/live(?:\/|$)/;
     const PLAYBACK_ROUTE_RE = /^\/(?:live|video)(?:\/|$)/;
-    const RELEVANT_DOM_SELECTOR = `video, ${TIME_SELECTOR}, ${LIVE_LEFT_BUTTONS_SELECTOR}, [${LIVE_EDGE_PATCHED_ATTR}], #${SKIP_PILL_ID}`;
+    const RELEVANT_DOM_SELECTOR = `video, ${TIME_SELECTOR}, ${LIVE_LEFT_BUTTONS_SELECTOR}, ${LIVE_PLAYBACK_SWITCH_SELECTOR}, [${LIVE_EDGE_PATCHED_ATTR}], #${SKIP_PILL_ID}, #${LIVE_FAST_FORWARD_BUTTON_ID}`;
     const SKIP_VISIBILITY_RESYNC_DELAY_MS = 240;
     const CONTROL_AREA_BEFORE_VIDEO_BOTTOM = 150;
     const CONTROL_AREA_AFTER_VIDEO_BOTTOM = 110;
@@ -46,6 +53,7 @@
     let skipPillEl = null;
     let skipValueEl = null;
     let skipPillAnchorEl = null;
+    let liveFastForwardButtonEl = null;
     let lastUrl = location.href;
     let pageChangeTimer = null;
     let attachedVideo = null;
@@ -66,6 +74,7 @@
     let liveResumeHandlersInstalled = false;
     const scheduleDomSync = createThrottledDomSync(() => {
         ensureLiveResumeGuardAttached();
+        ensureLiveFastForwardButtonInjected();
         ensureSkipPillInjected();
         scheduleSkipPillSync({ delayed: true });
     });
@@ -85,6 +94,10 @@
 
     function isLiveResumeGuardEnabled() {
         return isSkipEnabled() && featureOptions.skipLivePauseResumeEnabled;
+    }
+
+    function isLiveFastForwardButtonEnabled() {
+        return isSkipEnabled() && isLiveRoute();
     }
 
     function isLiveRoute() {
@@ -203,6 +216,19 @@
         }
     }
 
+    function getBufferedRange(video) {
+        if (!(video instanceof HTMLVideoElement) || !video.buffered?.length) return null;
+        try {
+            const lastIndex = video.buffered.length - 1;
+            const start = video.buffered.start(lastIndex);
+            const end = video.buffered.end(lastIndex);
+            if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+            return { start, end };
+        } catch {
+            return null;
+        }
+    }
+
     function getSeekBounds(video) {
         const seekableRange = getSeekableRange(video);
         if (seekableRange && (isLiveRoute() || !Number.isFinite(video.duration))) {
@@ -223,7 +249,13 @@
 
     function looksLikeLiveEdgeButton(button) {
         if (!(button instanceof HTMLElement)) return false;
+        if (button.id === LIVE_FAST_FORWARD_BUTTON_ID) return true;
         return button.hasAttribute(LIVE_EDGE_PATCHED_ATTR) || containsAnyTerm(getCandidateText(button), LIVE_EDGE_BUTTON_TERMS);
+    }
+
+    function markLiveEdgeIntent() {
+        lastLiveEdgeIntentAt = performance.now();
+        cancelResumeRestore({ clearSnapshot: true });
     }
 
     function isInLikelyVideoControlArea(el, video) {
@@ -584,6 +616,60 @@
   min-width:0;
   text-align:left;
 }
+#${LIVE_FAST_FORWARD_BUTTON_ID}{
+  display:inline-flex !important;
+  align-items:center;
+  justify-content:center;
+  width:32px;
+  height:32px;
+  min-width:32px;
+  padding:0;
+  border:0;
+  border-radius:9999px;
+  background-color:transparent !important;
+  appearance:none;
+  -webkit-appearance:none;
+  color:rgba(255,255,255,0.92);
+  font-family:inherit;
+  font-size:14px;
+  font-weight:800;
+  line-height:1;
+  letter-spacing:0;
+  white-space:nowrap;
+  cursor:pointer;
+  user-select:none;
+  pointer-events:auto;
+  flex:0 0 auto;
+  align-self:center;
+  position:relative;
+  z-index:2;
+  box-sizing:border-box;
+  transition:opacity 120ms ease, background-color 120ms ease;
+}
+#${LIVE_FAST_FORWARD_BUTTON_ID}:hover{
+  background-color:rgba(255,255,255,0.14) !important;
+  opacity:1;
+}
+#${LIVE_FAST_FORWARD_BUTTON_ID}:active{
+  opacity:0.78;
+  background-color:rgba(255,255,255,0.18) !important;
+}
+#${LIVE_FAST_FORWARD_BUTTON_ID}:focus-visible{
+  outline:none;
+  box-shadow:0 0 0 2px rgba(255,255,255,0.22);
+}
+#${LIVE_FAST_FORWARD_BUTTON_ID}:disabled{
+  opacity:0.35;
+  cursor:default;
+  pointer-events:none;
+}
+#${LIVE_FAST_FORWARD_BUTTON_ID} .bc-live-ff-icon{
+  display:block;
+  width:24px;
+  height:24px;
+  fill:currentColor;
+  flex:0 0 auto;
+}
 `);
     }
 
@@ -617,6 +703,12 @@
 
     function findVodPillAnchorElement() {
         return findLeftButtonsContainer();
+    }
+
+    function getLiveFastForwardButtonElement() {
+        if (liveFastForwardButtonEl && liveFastForwardButtonEl.isConnected) return liveFastForwardButtonEl;
+        liveFastForwardButtonEl = document.getElementById(LIVE_FAST_FORWARD_BUTTON_ID);
+        return liveFastForwardButtonEl;
     }
 
     function getSkipPillElement() {
@@ -658,7 +750,7 @@
         if (!(container instanceof HTMLElement)) return null;
 
         const children = Array.from(container.children || []).filter((child) => {
-            return child instanceof HTMLElement && child.id !== SKIP_PILL_ID;
+            return child instanceof HTMLElement && child.id !== SKIP_PILL_ID && child.id !== LIVE_FAST_FORWARD_BUTTON_ID;
         });
 
         const visibleChildren = children.filter((child) => getVisibleArea(child) > 0);
@@ -695,6 +787,150 @@
             container.appendChild(pill);
         }
 
+        return true;
+    }
+
+    function findLiveFastForwardReference(container) {
+        if (!(container instanceof HTMLElement)) return null;
+
+        const playbackSwitches = Array.from(container.querySelectorAll(LIVE_PLAYBACK_SWITCH_SELECTOR))
+            .filter((el) => {
+                return (
+                    el instanceof HTMLElement &&
+                    el.id !== LIVE_FAST_FORWARD_BUTTON_ID &&
+                    getVisibleArea(el) > 0
+                );
+            });
+        if (playbackSwitches.length) {
+            playbackSwitches.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+            return playbackSwitches[0];
+        }
+
+        const children = Array.from(container.children || []).filter((child) => {
+            return child instanceof HTMLElement && child.id !== SKIP_PILL_ID && child.id !== LIVE_FAST_FORWARD_BUTTON_ID;
+        });
+        const visibleChildren = children.filter((child) => getVisibleArea(child) > 0);
+        return visibleChildren[0] || children[0] || null;
+    }
+
+    function syncLiveFastForwardButtonClass(button, container) {
+        if (!(button instanceof HTMLElement) || !(container instanceof HTMLElement)) return;
+
+        const reference = findLiveFastForwardReference(container);
+        button.className = reference?.className || "";
+        button.classList.add("knife-ff");
+        button.classList.add("betterchzzk-live-fast-forward-control");
+        button.style.order = "";
+        button.style.marginLeft = "4px";
+
+        if (!reference) return;
+        button.style.opacity = reference.style.opacity || "";
+        button.style.visibility = reference.style.visibility || "";
+        button.style.pointerEvents = reference.style.pointerEvents || "";
+        button.style.transition = reference.style.transition || "";
+    }
+
+    function getLiveFastForwardTarget(video) {
+        const bufferedRange = getBufferedRange(video);
+        if (bufferedRange) return bufferedRange.end;
+
+        const seekableRange = getSeekableRange(video);
+        if (seekableRange) return seekableRange.end;
+
+        return NaN;
+    }
+
+    function syncLiveFastForwardButtonLabels(button) {
+        if (!(button instanceof HTMLElement)) return;
+        button.setAttribute("label", LIVE_FAST_FORWARD_LABEL);
+        button.setAttribute("aria-label", LIVE_FAST_FORWARD_LABEL);
+        button.setAttribute("tooltip", LIVE_FAST_FORWARD_LABEL);
+        button.title = LIVE_FAST_FORWARD_LABEL;
+    }
+
+    function syncLiveFastForwardButtonState(button = getLiveFastForwardButtonElement()) {
+        if (!(button instanceof HTMLButtonElement)) return;
+        const video = getMainVideoElement();
+        const target = getLiveFastForwardTarget(video);
+        const available = Number.isFinite(target);
+
+        button.disabled = !available;
+        syncLiveFastForwardButtonLabels(button);
+        button.dataset.betterChzzkReady = available ? "1" : "0";
+    }
+
+    function seekLiveToBufferedEnd(video = getMainVideoElement()) {
+        if (!(video instanceof HTMLVideoElement)) return false;
+
+        const target = getLiveFastForwardTarget(video);
+        if (!Number.isFinite(target)) return false;
+
+        markLiveEdgeIntent();
+        try {
+            video.currentTime = target;
+            return true;
+        } catch {
+            const fallbackTarget = target - 0.5;
+            if (!Number.isFinite(fallbackTarget)) return false;
+            try {
+                video.currentTime = fallbackTarget;
+                return true;
+            } catch {
+                return false;
+            }
+        }
+    }
+
+    function handleLiveFastForwardClick(event) {
+        const button = getLiveFastForwardButtonElement();
+        if (!button || !button.contains(event.target)) return;
+
+        event.preventDefault();
+        event.stopPropagation();
+        event.stopImmediatePropagation();
+
+        seekLiveToBufferedEnd();
+        syncLiveFastForwardButtonState(button);
+    }
+
+    function createLiveFastForwardButton() {
+        injectSkipStyleOnce();
+
+        const button = document.createElement("button");
+        button.id = LIVE_FAST_FORWARD_BUTTON_ID;
+        button.type = "button";
+        syncLiveFastForwardButtonLabels(button);
+        button.dataset.betterChzzkLiveFastForward = "1";
+        button.innerHTML = `
+<svg class="bc-live-ff-icon" viewBox="0 0 30 30" aria-hidden="true" focusable="false">
+  <path d="M9.4 8.1c0-.84.96-1.32 1.63-.82l8.63 6.46c.54.4.54 1.21 0 1.61l-8.63 6.46c-.67.5-1.63.02-1.63-.82V8.1Z"></path>
+  <path d="M21.1 8.4c0-.61.49-1.1 1.1-1.1s1.1.49 1.1 1.1v13.2c0 .61-.49 1.1-1.1 1.1s-1.1-.49-1.1-1.1V8.4Z"></path>
+</svg>
+`;
+        button.addEventListener("click", handleLiveFastForwardClick, true);
+
+        liveFastForwardButtonEl = button;
+        return button;
+    }
+
+    function mountLiveFastForwardButton(button, container) {
+        if (!(button instanceof HTMLElement) || !(container instanceof HTMLElement)) return false;
+
+        syncLiveFastForwardButtonClass(button, container);
+
+        const reference = findLiveFastForwardReference(container);
+        if (reference?.parentElement === container) {
+            if (button.parentElement !== container || button.previousElementSibling !== reference) {
+                if (button.parentElement) button.remove();
+                reference.insertAdjacentElement("afterend", button);
+            }
+            return true;
+        }
+
+        if (button.parentElement !== container) {
+            if (button.parentElement) button.remove();
+            container.appendChild(button);
+        }
         return true;
     }
 
@@ -809,11 +1045,11 @@
 
     function findAnchorElementForPill(pill) {
         if (skipPillAnchorEl?.isConnected && getVisibleArea(skipPillAnchorEl) > 0) return skipPillAnchorEl;
+        if (pill?.parentElement?.matches?.(LIVE_LEFT_BUTTONS_SELECTOR)) return pill.parentElement;
 
         const previous = pill?.previousElementSibling;
         if (previous?.matches?.(TIME_SELECTOR)) return previous;
         if (looksLikeLiveEdgeButton(previous)) return previous;
-        if (pill?.parentElement?.matches?.(LIVE_LEFT_BUTTONS_SELECTOR)) return pill.parentElement;
         return findPillAnchorElement();
     }
 
@@ -846,6 +1082,7 @@
 
     function runSkipPillSync() {
         skipSyncRafId = null;
+        ensureLiveFastForwardButtonInjected();
         syncExistingSkipPill();
     }
 
@@ -893,12 +1130,38 @@
         showSkipPill(pill);
     }
 
+    function ensureLiveFastForwardButtonInjected() {
+        if (!isLiveFastForwardButtonEnabled()) {
+            removeLiveFastForwardButton();
+            return;
+        }
+
+        const container = findLeftButtonsContainer();
+        const existing = getLiveFastForwardButtonElement();
+        if (!container) {
+            if (existing) removeLiveFastForwardButton();
+            return;
+        }
+
+        injectSkipStyleOnce();
+
+        const button = existing || createLiveFastForwardButton();
+        if (!mountLiveFastForwardButton(button, container)) return;
+        syncLiveFastForwardButtonState(button);
+    }
+
     function removeSkipPill() {
         const pill = getSkipPillElement();
         if (pill) pill.remove();
         skipPillEl = null;
         skipValueEl = null;
         skipPillAnchorEl = null;
+    }
+
+    function removeLiveFastForwardButton() {
+        const button = getLiveFastForwardButtonElement();
+        if (button) button.remove();
+        liveFastForwardButtonEl = null;
     }
 
     function handlePageChange() {
@@ -913,6 +1176,7 @@
 
         if (!isPlaybackRoute()) {
             removeSkipPill();
+            removeLiveFastForwardButton();
             detachLiveResumeGuard();
             refreshDomObserverConfig();
             return;
@@ -922,6 +1186,7 @@
         pageChangeTimer = setTimeout(() => {
             pageChangeTimer = null;
             ensureLiveResumeGuardAttached();
+            ensureLiveFastForwardButtonInjected();
             ensureSkipPillInjected();
             scheduleSkipPillSync({ delayed: true });
         }, 500);
@@ -980,7 +1245,9 @@
                 "style",
                 "hidden",
                 "aria-hidden",
+                "label",
                 "aria-label",
+                "tooltip",
                 "title",
                 "disabled",
                 "aria-disabled",
@@ -1088,12 +1355,14 @@
         }
         startDomObserver();
         ensureLiveResumeGuardAttached();
+        ensureLiveFastForwardButtonInjected();
         if (isPillEnabled()) {
             ensureSkipPillInjected();
             scheduleSkipPillSync({ delayed: true });
         }
         startupSyncTimer = setTimeout(() => {
             startupSyncTimer = 0;
+            ensureLiveFastForwardButtonInjected();
             if (isPillEnabled()) ensureSkipPillInjected();
         }, 800);
     }
@@ -1110,6 +1379,7 @@
         }
         stopDomObserver();
         removeSkipPill();
+        removeLiveFastForwardButton();
         detachLiveResumeGuard();
     }
 
@@ -1122,9 +1392,11 @@
         }
         installRuntime();
         ensureLiveResumeGuardAttached();
+        ensureLiveFastForwardButtonInjected();
         refreshDomObserverConfig();
         if (!isPlaybackRoute()) {
             removeSkipPill();
+            removeLiveFastForwardButton();
             return;
         }
         if (isPillEnabled()) {

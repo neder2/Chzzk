@@ -21,7 +21,7 @@
         skipWheelStep: { kind: "int", default: 1, min: 1, max: 60 },
         skipWheelShiftStep: { kind: "int", default: 5, min: 1, max: 300 },
         skipWheelAltStep: { kind: "int", default: 10, min: 1, max: 600 },
-        vodBroadcastClockEnabled: { kind: "bool", default: true, feature: true },
+        vodBroadcastClockEnabled: { kind: "bool", default: false, feature: true },
         timeMachineLagLabelEnabled: { kind: "bool", default: true, feature: true },
         vodReplayChatFixEnabled: { kind: "bool", default: true, feature: true },
         adblockPopupEnabled: { kind: "bool", default: true, feature: true },
