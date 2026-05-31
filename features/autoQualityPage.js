@@ -47,6 +47,12 @@
     const PLAYBACK_RESTORE_MAX_ATTEMPTS = 12;
     const STARTUP_AUTOPLAY_GRACE_MS = 3500;
     const RESTORE_TIME_EPSILON_SECONDS = 1.5;
+    const RESTORE_TIME_ALLOWED_DRIFT_SECONDS = 2.5;
+    const VOD_STARTUP_READY_SECONDS = 1.25;
+    const VOD_STARTUP_MAX_WAIT_MS = 1500;
+    const VOD_STARTUP_SEEK_SETTLE_MS = 180;
+    const VOD_RESUME_CONTROL_TEXT_RE = /(?:이어\s*보기|이어서\s*보기|마지막\s*시청|보던\s*위치|시청\s*중인\s*위치)/;
+    const USER_MEDIA_INTENT_WINDOW_MS = 1500;
     const COMMENT_TIMELINE_SEEK_EPSILON_SECONDS = 1.25;
     const COMMENT_TIMELINE_SEEK_STABLE_MS = 450;
     const COMMENT_TIMELINE_SEEK_INTENT_WINDOW_MS = 5000;
@@ -79,6 +85,13 @@
     let commentTimelineSeekSeq = 0;
     let activeCommentTimelineSeek = null;
     let lastCommentTimelineSeekAt = 0;
+    let lastUserMediaIntentAt = 0;
+    let vodGuardVideo = null;
+    let vodStartupHref = "";
+    let vodStartupFirstSeenAt = 0;
+    let vodStartupMediaReadyAt = 0;
+    let vodStartupLastSeekAt = 0;
+    let vodStartupSettled = false;
     const trackedQualityTargets = [];
 
     const nativeDefineProperty = Object.defineProperty;
@@ -228,6 +241,24 @@
         finishCommentTimelineSeek(activeCommentTimelineSeek.seq);
     }
 
+    function rememberUserMediaIntent(event) {
+        if (!isVodRoute()) return;
+
+        if (event.type === "keydown") {
+            if (isEditableTarget(event.target)) return;
+            if (!["ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown", " ", "k", "K", "j", "J", "l", "L"].includes(event.key)) {
+                return;
+            }
+        }
+
+        const now = performance.now();
+        lastUserMediaIntentAt = now;
+    }
+
+    function hasRecentUserMediaIntent(now = performance.now()) {
+        return lastUserMediaIntentAt > 0 && now - lastUserMediaIntentAt <= USER_MEDIA_INTENT_WINDOW_MS;
+    }
+
 
     function readAutoQualityState() {
         let raw = document.documentElement.getAttribute(STATE_ATTR);
@@ -254,10 +285,18 @@
 
         if (!isPlaybackRoute()) {
             clearPageAutoApply();
+            detachVodPlaybackGuard();
             return;
         }
 
-        if (!autoQualityEnabled) clearPageAutoApply();
+        if (!autoQualityEnabled) {
+            clearPageAutoApply();
+            detachVodPlaybackGuard();
+            return;
+        }
+
+        ensureVodPlaybackGuardAttached();
+        startPageAutoApply();
     }
 
     function rememberQualityTarget(target) {
@@ -419,6 +458,10 @@
     document.addEventListener("mousedown", cancelCommentTimelineSeekOnUserIntent, true);
     document.addEventListener("touchstart", cancelCommentTimelineSeekOnUserIntent, true);
     window.addEventListener("keydown", cancelCommentTimelineSeekOnUserIntent, true);
+    document.addEventListener("pointerdown", rememberUserMediaIntent, true);
+    document.addEventListener("mousedown", rememberUserMediaIntent, true);
+    document.addEventListener("touchstart", rememberUserMediaIntent, true);
+    window.addEventListener("keydown", rememberUserMediaIntent, true);
     window.addEventListener(STATE_EVENT, syncAutoQualityState);
     window.addEventListener("pageshow", syncAutoQualityState, true);
 
@@ -675,44 +718,196 @@
         if (hasRecentCommentTimelineSeekIntent()) return false;
 
         const currentTime = Number(video.currentTime);
-        if (!Number.isFinite(currentTime)) return true;
+        if (!Number.isFinite(currentTime)) return false;
 
-        const delta = Math.abs(currentTime - capturedTime);
-        if (delta <= RESTORE_TIME_EPSILON_SECONDS) return true;
-
-        // A quality switch can temporarily reset the media element to the beginning.
-        // If the site already moved to a different timeline target, do not overwrite it.
         return currentTime < RESTORE_TIME_EPSILON_SECONDS && capturedTime > RESTORE_TIME_EPSILON_SECONDS;
     }
 
+    function isPlaybackTimeNearExpected(video, currentTime, capturedTime, startedAt) {
+        if (!Number.isFinite(currentTime) || !Number.isFinite(capturedTime)) return false;
+
+        const elapsedSeconds = Math.max(0, (performance.now() - startedAt) / 1000);
+        const playbackRate = Number(video?.playbackRate);
+        const expectedProgress = elapsedSeconds * (Number.isFinite(playbackRate) && playbackRate > 0 ? playbackRate : 1);
+        return Math.abs(currentTime - (capturedTime + expectedProgress)) <= RESTORE_TIME_ALLOWED_DRIFT_SECONDS;
+    }
+
+    function shouldCancelPlaybackTimeRestore(video, capturedTime, startedAt) {
+        if (!(video instanceof HTMLVideoElement) || !Number.isFinite(capturedTime) || capturedTime <= 0) return true;
+        if (hasRecentCommentTimelineSeekIntent()) return true;
+        if (lastUserMediaIntentAt >= startedAt) return true;
+
+        const currentTime = Number(video.currentTime);
+        if (!Number.isFinite(currentTime)) return false;
+        if (shouldRestorePlaybackTime(video, capturedTime)) return false;
+        return !isPlaybackTimeNearExpected(video, currentTime, capturedTime, startedAt);
+    }
+
     function restorePlaybackAfterQualityChange(video, currentTime, shouldResume) {
-        let restoredTime = false;
         let attemptCount = 0;
+        let timeRestoreCancelled = false;
+        const startedAt = performance.now();
 
         const runRestore = () => {
             const nextVideo = getMainVideo() || video;
             if (!(nextVideo instanceof HTMLVideoElement)) return;
 
-            if (!restoredTime && shouldRestorePlaybackTime(nextVideo, currentTime)) {
+            attemptCount += 1;
+
+            if (!timeRestoreCancelled && shouldCancelPlaybackTimeRestore(nextVideo, currentTime, startedAt)) {
+                timeRestoreCancelled = true;
+            }
+
+            if (!timeRestoreCancelled && shouldRestorePlaybackTime(nextVideo, currentTime)) {
                 try {
                     nextVideo.currentTime = currentTime;
-                    restoredTime = true;
                 } catch (_) {
                     // Some streams reject seeks until metadata is ready.
                 }
             }
 
-            if (!shouldResume || !nextVideo.paused) return;
+            let shouldRetry = !timeRestoreCancelled;
 
-            attemptCount += 1;
-            nextVideo.play?.().catch?.(() => {});
+            if (shouldResume && nextVideo.paused) {
+                nextVideo.play?.().catch?.(() => {});
+                shouldRetry = shouldRetry || nextVideo.paused;
+            }
 
-            if (nextVideo.paused && attemptCount < PLAYBACK_RESTORE_MAX_ATTEMPTS) {
+            if (shouldRetry && attemptCount < PLAYBACK_RESTORE_MAX_ATTEMPTS) {
                 setTimeout(runRestore, PLAYBACK_RESTORE_RETRY_MS);
             }
         };
 
         setTimeout(runRestore, PLAYBACK_RESTORE_DELAY_MS);
+    }
+
+    function clearVodGuardState() {
+        vodStartupHref = "";
+        vodStartupFirstSeenAt = 0;
+        vodStartupMediaReadyAt = 0;
+        vodStartupLastSeekAt = 0;
+        vodStartupSettled = false;
+    }
+
+    function detachVodPlaybackGuard() {
+        if (!vodGuardVideo) return;
+        vodGuardVideo.removeEventListener("loadedmetadata", onVodStartupProgress, true);
+        vodGuardVideo.removeEventListener("playing", onVodStartupProgress, true);
+        vodGuardVideo.removeEventListener("seeking", onVodStartupProgress, true);
+        vodGuardVideo.removeEventListener("seeked", onVodStartupProgress, true);
+        vodGuardVideo.removeEventListener("timeupdate", onVodStartupProgress, true);
+        vodGuardVideo = null;
+        clearVodGuardState();
+    }
+
+    function ensureVodPlaybackGuardAttached() {
+        if (!autoQualityEnabled || !isVodRoute()) {
+            detachVodPlaybackGuard();
+            return;
+        }
+
+        const video = getMainVideo();
+        if (!(video instanceof HTMLVideoElement)) {
+            detachVodPlaybackGuard();
+            return;
+        }
+
+        if (vodGuardVideo === video) return;
+        detachVodPlaybackGuard();
+        vodGuardVideo = video;
+        resetVodStartupState(video);
+        vodGuardVideo.addEventListener("loadedmetadata", onVodStartupProgress, true);
+        vodGuardVideo.addEventListener("playing", onVodStartupProgress, true);
+        vodGuardVideo.addEventListener("seeking", onVodStartupProgress, true);
+        vodGuardVideo.addEventListener("seeked", onVodStartupProgress, true);
+        vodGuardVideo.addEventListener("timeupdate", onVodStartupProgress, true);
+    }
+
+    function getVodTime(video) {
+        const value = Number(video?.currentTime);
+        return Number.isFinite(value) ? value : NaN;
+    }
+
+    function resetVodStartupState(video) {
+        vodStartupHref = location.href;
+        vodStartupFirstSeenAt = performance.now();
+        vodStartupMediaReadyAt = 0;
+        vodStartupLastSeekAt = 0;
+        vodStartupSettled = !isVodRoute() || !(video instanceof HTMLVideoElement);
+    }
+
+    function ensureVodStartupState(video) {
+        if (vodGuardVideo !== video || vodStartupHref !== location.href || !vodStartupFirstSeenAt) {
+            resetVodStartupState(video);
+        }
+    }
+
+    function getResumeControlText(el) {
+        if (!(el instanceof Element)) return "";
+        return [
+            el.textContent,
+            el.getAttribute("aria-label"),
+            el.getAttribute("title"),
+        ].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
+    }
+
+    function hasVisibleVodResumeControl() {
+        if (!isVodRoute()) return false;
+        const controls = document.querySelectorAll("button, a, [role='button']");
+        for (const el of controls) {
+            if (!isVisible(el)) continue;
+            if (VOD_RESUME_CONTROL_TEXT_RE.test(getResumeControlText(el))) return true;
+        }
+        return false;
+    }
+
+    function isVodStartupQualityReady(video) {
+        if (!isVodRoute()) return true;
+        if (!(video instanceof HTMLVideoElement)) return false;
+
+        ensureVodStartupState(video);
+        if (vodStartupSettled) return true;
+
+        const now = performance.now();
+        const currentTime = getVodTime(video);
+        const mediaReady = video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA ||
+            (Number.isFinite(Number(video.duration)) && Number(video.duration) > 0);
+        if (mediaReady && !vodStartupMediaReadyAt) vodStartupMediaReadyAt = now;
+
+        if (hasVisibleVodResumeControl()) return false;
+        if (video.seeking) return false;
+        if (vodStartupLastSeekAt && now - vodStartupLastSeekAt < VOD_STARTUP_SEEK_SETTLE_MS) return false;
+        if (!mediaReady && (!Number.isFinite(currentTime) || currentTime < RESTORE_TIME_EPSILON_SECONDS)) return false;
+
+        if (hasRecentUserMediaIntent(now) && Number.isFinite(currentTime) && currentTime > RESTORE_TIME_EPSILON_SECONDS) {
+            vodStartupSettled = true;
+        } else if (Number.isFinite(currentTime) && currentTime >= VOD_STARTUP_READY_SECONDS) {
+            vodStartupSettled = true;
+        } else if (vodStartupMediaReadyAt && now - vodStartupMediaReadyAt >= VOD_STARTUP_MAX_WAIT_MS) {
+            vodStartupSettled = true;
+        }
+
+        return vodStartupSettled;
+    }
+
+    function shouldDeferVodStartupQuality() {
+        if (!autoQualityEnabled || !isVodRoute()) return false;
+
+        const video = getMainVideo();
+        if (!(video instanceof HTMLVideoElement)) return true;
+        ensureVodPlaybackGuardAttached();
+        return !isVodStartupQualityReady(video);
+    }
+
+    function onVodStartupProgress(event) {
+        const video = event.currentTarget;
+        if (!(video instanceof HTMLVideoElement) || video !== vodGuardVideo) return;
+
+        if (event.type === "seeking" || event.type === "seeked") {
+            vodStartupLastSeekAt = performance.now();
+        }
+
+        if (isVodStartupQualityReady(video)) startPageAutoApply(TRACK_RECOVERY_WINDOW_MS);
     }
 
     function readNumericHeight(target, props) {
@@ -842,6 +1037,7 @@
     function applyQualityToPlayer(player, quality) {
         if (!player) return { status: "pending", reason: "player-missing" };
 
+        ensureVodPlaybackGuardAttached();
         const preferredHeight = getPreferredHeight(quality);
         const video = getMainVideo();
         const currentTime = Number(video?.currentTime);
@@ -889,6 +1085,10 @@
     }
 
     function applyQuality(quality) {
+        if (shouldDeferVodStartupQuality()) {
+            return { status: "pending", reason: "vod-resume-wait" };
+        }
+
         const player = getPlayer();
         bindTrackList(player);
         return applyQualityToPlayer(player, quality);
