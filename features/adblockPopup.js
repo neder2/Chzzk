@@ -7,6 +7,7 @@
     const READY_ATTR = "data-betterchzzk-adblock-popup-ready";
     const SCROLL_UNLOCK_DELAYS_MS = [0, 80, 250, 800];
     const {
+        bindFeatureOptions,
         createThrottledDomSync,
         mutationMatchesSelector,
         normalizeCompact,
@@ -271,13 +272,7 @@ ${AD_POPUP_SELECTOR}[${AD_SUPPRESS_ATTR}="1"]{
         publishReady();
     }
 
-    BetterChzzkSettings.getOptions((options) => {
-        featureOptions = options;
-        if (isEnabled()) installRuntime();
-        else teardownRuntime();
-    });
-
-    BetterChzzkSettings.addOptionsChangeListener((options) => {
+    bindFeatureOptions((options) => {
         featureOptions = options;
         if (isEnabled()) installRuntime();
         else teardownRuntime();

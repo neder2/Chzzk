@@ -18,8 +18,12 @@
     const storage = globalThis.chrome?.storage?.local;
     const { normalizeOptions } = BetterChzzkSettings;
     const {
+        bindFeatureOptions,
+        createMutationObserverSync,
         createThrottledDomSync,
+        fetchJson,
         getMainVideoElement,
+        mutationMatchesSelector,
         normSpace,
         onReady,
         startPageChangeDetection,
@@ -352,21 +356,6 @@
         };
     }
 
-    async function fetchJsonWithTimeout(url) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-        try {
-            const response = await fetch(url, {
-                credentials: "include",
-                signal: controller.signal,
-            });
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return await response.json();
-        } finally {
-            clearTimeout(timer);
-        }
-    }
-
     function mergeMetadata(target, metadata) {
         if (!target || !metadata) return;
         const nextChannelName = pickString(metadata.channelName, target.channelName);
@@ -402,7 +391,7 @@
 
         try {
             const url = `${LIVE_DETAIL_API_BASE}/${encodeURIComponent(channelId)}/live-detail`;
-            const json = await fetchJsonWithTimeout(url);
+            const json = await fetchJson(url, { timeoutMs: FETCH_TIMEOUT_MS });
             if (requestId !== metadataRequestSeq || session !== current) return;
             mergeMetadata(current, extractMetadataFromLiveDetail(json, channelId));
             if (!current.storageSessionRecorded && current.liveId && String(current.recordId || "").startsWith("channel:")) {
@@ -762,10 +751,7 @@
             if (needsFollowUp) {
                 flushAgainRequested = false;
                 if (session === current) flushSession({ force: current.closed === true });
-                return;
-            }
-            flushAgainRequested = false;
-            if (current.closed === true && session === current) {
+            } else if (current.closed === true && session === current) {
                 session = null;
             }
         }
@@ -942,27 +928,15 @@
 
     function startDomObserver() {
         if (domObserver) return;
-        domObserver = new MutationObserver((mutations) => {
-            handlePageChange();
-            if (!isFeatureEnabled()) return;
-            if (!mutations.some((mutation) => BetterChzzk.utils.mutationMatchesSelector(mutation, "video"))) return;
-            scheduleDomSync();
+        domObserver = createMutationObserverSync({
+            options: { childList: true, subtree: true },
+            onMutations: handlePageChange,
+            shouldSchedule: (mutations) => (
+                isFeatureEnabled() && mutations.some((mutation) => mutationMatchesSelector(mutation, "video"))
+            ),
+            schedule: scheduleDomSync,
+            onBodyReady: syncTrackingState,
         });
-
-        if (document.body) {
-            domObserver.observe(document.body, { childList: true, subtree: true });
-            return;
-        }
-
-        bodyObserver = new MutationObserver(() => {
-            if (!document.body) return;
-            bodyObserver.disconnect();
-            bodyObserver = null;
-            domObserver.observe(document.body, { childList: true, subtree: true });
-            syncTrackingState();
-        });
-
-        bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
     }
 
     function stopDomObserver() {
@@ -1034,8 +1008,7 @@
         syncTrackingState();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     onReady(() => {
         if (isFeatureEnabled()) {

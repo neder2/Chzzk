@@ -957,10 +957,6 @@ function getMonthScopeBounds(year, month) {
     };
 }
 
-function getSessionSecondsForScope(session, startMs, endMs) {
-    return sumWatchRanges(collectSessionWatchRanges([session], startMs, endMs));
-}
-
 function getUniqueWatchSecondsForScope(startMs = -Infinity, endMs = Infinity) {
     return entries.reduce((sum, entry) => {
         return sum + sumWatchRanges(collectSessionWatchRanges(entry.sessionDetails, startMs, endMs));
@@ -970,16 +966,6 @@ function getUniqueWatchSecondsForScope(startMs = -Infinity, endMs = Infinity) {
 function getUniqueWatchSecondsForMonth(year, month) {
     const { startMs, endMs } = getMonthScopeBounds(year, month);
     return getUniqueWatchSecondsForScope(startMs, endMs);
-}
-
-function getSessionSecondsForDate(session, dateKey) {
-    const bounds = getDateScopeBounds(dateKey);
-    return bounds ? getSessionSecondsForScope(session, bounds.startMs, bounds.endMs) : 0;
-}
-
-function getSessionSecondsForMonth(session, year, month) {
-    const { startMs, endMs } = getMonthScopeBounds(year, month);
-    return getSessionSecondsForScope(session, startMs, endMs);
 }
 
 function getEntrySessionsForScope(entry) {

@@ -21,7 +21,7 @@
     const VOD_ROUTE_RE = /^\/video(?:\/|$)/;
 
     let featureOptions = BetterChzzkSettings.normalizeOptions();
-    let preferredQuality = BetterChzzkSettings.DEFAULT_QUALITY;
+    const preferredQuality = BetterChzzkSettings.DEFAULT_QUALITY;
     let lastUrl = location.href;
     let pageChangeTimer = 0;
     let applyTimer = 0;
@@ -43,6 +43,7 @@
     let playbackStartupReadyAt = 0;
 
     const {
+        bindFeatureOptions,
         createThrottledDomSync,
         mutationMatchesSelector,
         onReady,
@@ -401,8 +402,7 @@
         clearAutoQualityTimers();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     onReady(() => {
         if (featureOptions.autoQualityEnabled) installRuntime();

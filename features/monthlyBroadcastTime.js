@@ -60,6 +60,9 @@
     let storageListenerInstalled = false;
     let removePageChangeDetection = null;
     const {
+        bindFeatureOptions,
+        createMutationObserverSync,
+        fetchJson,
         isLastPage: isLastPageResponse,
         isVisible,
         normSpace,
@@ -886,21 +889,6 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
         return isLastPageResponse(json, videos, PAGE_SIZE);
     }
 
-    async function fetchJsonWithTimeout(url, options = {}, timeoutMs = FETCH_TIMEOUT_MS) {
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-        try {
-            const res = await fetch(url, {
-                ...options,
-                signal: controller.signal,
-            });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return res.json();
-        } finally {
-            window.clearTimeout(timer);
-        }
-    }
-
     function getChannelPageCache(channelId) {
         let cache = channelVideoPageCache.get(channelId);
         if (!cache) {
@@ -920,9 +908,10 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
             size: String(PAGE_SIZE),
         });
         const url = `${API_BASE}/${encodeURIComponent(channelId)}/videos?${params.toString()}`;
-        return fetchJsonWithTimeout(url, {
+        return fetchJson(url, {
             credentials: "include",
             headers: { Accept: "application/json" },
+            timeoutMs: FETCH_TIMEOUT_MS,
         });
     }
 
@@ -1366,9 +1355,10 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
             return cached;
         }
 
-        const promise = fetchJsonWithTimeout(`${VIDEO_DETAIL_API_BASE}/${encodeURIComponent(videoNo)}`, {
+        const promise = fetchJson(`${VIDEO_DETAIL_API_BASE}/${encodeURIComponent(videoNo)}`, {
             credentials: "include",
             headers: { Accept: "application/json" },
+            timeoutMs: FETCH_TIMEOUT_MS,
         }).then((json) => json?.content || null).catch((error) => {
             videoDetailCache.delete(videoNo);
             throw error;
@@ -1619,7 +1609,6 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
     }
 
     function formatKstClock(ms) {
-        const parts = getKstParts(ms);
         const date = new Date(ms + KST_OFFSET_MS);
         const hours = String(date.getUTCHours()).padStart(2, "0");
         const minutes = String(date.getUTCMinutes()).padStart(2, "0");
@@ -2228,23 +2217,24 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
 
     function startObserver() {
         if (observer) return;
-        observer = new MutationObserver((mutations) => {
-            const channelRoute = isChannelRoute();
-            if (location.href !== lastUrl) {
-                lastUrl = location.href;
-                if (channelRoute) removeWidget();
-                else removeWidgetIfMounted();
-            }
-            if (!isFeatureEnabled() || !channelRoute) return;
-            if (!mutations.some(mutationShouldSchedule)) return;
-            schedule();
-        });
-
-        observer.observe(document.body || document.documentElement, {
-            childList: true,
-            subtree: true,
-            attributes: true,
-            attributeFilter: ["class", "style", "hidden", HOST_ATTR],
+        observer = createMutationObserverSync({
+            target: () => document.body || document.documentElement,
+            options: {
+                childList: true,
+                subtree: true,
+                attributes: true,
+                attributeFilter: ["class", "style", "hidden", HOST_ATTR],
+            },
+            onMutations: () => {
+                const channelRoute = isChannelRoute();
+                if (location.href !== lastUrl) {
+                    lastUrl = location.href;
+                    if (channelRoute) removeWidget();
+                    else removeWidgetIfMounted();
+                }
+            },
+            shouldSchedule: (mutations) => isFeatureEnabled() && isChannelRoute() && mutations.some(mutationShouldSchedule),
+            schedule,
         });
     }
 
@@ -2357,8 +2347,7 @@ body[theme="dark"] #${WIDGET_ID} .bcmb-day[data-watch="1"]::before,
         schedule();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     onReady(() => {
         if (isFeatureEnabled()) installRuntime();

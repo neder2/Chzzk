@@ -54,7 +54,9 @@
     const MAX_HISTORY_INFO_CACHE_ENTRIES = 100;
 
     const {
+        bindFeatureOptions,
         createThrottledDomSync,
+        fetchJson,
         getMainVideoElement,
         injectStyleOnce,
         isVisible,
@@ -926,18 +928,6 @@
         return Number.isFinite(startMs) ? startMs : NaN;
     }
 
-    function fetchJsonWithTimeout(url, options = {}) {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-        return fetch(url, { ...options, signal: controller.signal }).then((response) => {
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            return response.json();
-        }).finally(() => {
-            clearTimeout(timer);
-        });
-    }
-
     function fetchVideoDetail(videoNo) {
         if (detailCache.has(videoNo)) {
             const cached = detailCache.get(videoNo);
@@ -945,9 +935,10 @@
             return cached;
         }
 
-        const promise = fetchJsonWithTimeout(`${VIDEO_DETAIL_API_BASE}/${encodeURIComponent(videoNo)}`, {
+        const promise = fetchJson(`${VIDEO_DETAIL_API_BASE}/${encodeURIComponent(videoNo)}`, {
             credentials: "include",
             headers: { Accept: "application/json" },
+            timeoutMs: FETCH_TIMEOUT_MS,
         }).then((json) => json?.content || null).catch((error) => {
             detailCache.delete(videoNo);
             throw error;
@@ -1052,6 +1043,7 @@
         return `${m}:${pad2(s)}`;
     }
 
+    // eslint-disable-next-line no-unused-vars
     function formatTitleSeenRange(row) {
         const first = Number(row.firstSeenAt) || 0;
         const last = Number(row.lastSeenAt) || 0;
@@ -1594,8 +1586,7 @@
         scheduleSync();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     onReady(() => {
         if (isVodFeatureEnabled()) installRuntime();

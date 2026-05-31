@@ -70,7 +70,6 @@
 
     function createThrottledDomSync(run, throttleMs = 160) {
         let scheduled = false;
-        let timer = 0;
         let lastRunAt = 0;
         return function scheduleDomSync() {
             if (scheduled) return;
@@ -80,7 +79,6 @@
             scheduled = true;
 
             const queue = () => {
-                timer = 0;
                 requestAnimationFrame(() => {
                     scheduled = false;
                     lastRunAt = performance.now();
@@ -89,7 +87,7 @@
             };
 
             if (delay > 0) {
-                timer = window.setTimeout(queue, delay);
+                window.setTimeout(queue, delay);
                 return;
             }
 
@@ -132,6 +130,79 @@
         sync?.();
     }
 
+    async function fetchJson(url, { signal, timeoutMs = 12000, ...init } = {}) {
+        const controller = new AbortController();
+        const onExternalAbort = () => controller.abort();
+
+        if (signal) {
+            if (signal.aborted) controller.abort();
+            else signal.addEventListener("abort", onExternalAbort, { once: true });
+        }
+
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+            const res = await fetch(url, {
+                credentials: "include",
+                ...init,
+                signal: controller.signal,
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } finally {
+            clearTimeout(timer);
+            if (signal) signal.removeEventListener("abort", onExternalAbort);
+        }
+    }
+
+    function createMutationObserverSync({
+        target = () => document.body,
+        options = { childList: true, subtree: true },
+        onMutations,
+        shouldIgnoreMutations,
+        shouldSchedule,
+        schedule,
+        onObserved,
+        onBodyReady,
+    } = {}) {
+        const observer = new MutationObserver((mutations) => {
+            onMutations?.(mutations);
+            if (!schedule) return;
+            if (shouldIgnoreMutations?.(mutations)) return;
+            if (shouldSchedule && !shouldSchedule(mutations)) return;
+            schedule();
+        });
+
+        const resolveTarget = () => (typeof target === "function" ? target() : target);
+        const resolveOptions = () => (typeof options === "function" ? options() : options);
+        const observeTarget = (node) => {
+            observer.observe(node, resolveOptions());
+            onObserved?.(observer, node);
+        };
+
+        const initialTarget = resolveTarget();
+        if (initialTarget) {
+            observeTarget(initialTarget);
+            return observer;
+        }
+
+        const bodyObserver = new MutationObserver(() => {
+            const readyTarget = resolveTarget();
+            if (!readyTarget) return;
+            bodyObserver.disconnect();
+            observeTarget(readyTarget);
+            onBodyReady?.(observer, readyTarget);
+        });
+
+        bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
+        return observer;
+    }
+
+    function bindFeatureOptions(applyOptions) {
+        BetterChzzkSettings.getOptions(applyOptions);
+        return BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    }
+
     root.utils = {
         ...(root.utils || {}),
         onReady,
@@ -148,5 +219,8 @@
         injectStyleOnce,
         isLastPage,
         setLoadingReason,
+        fetchJson,
+        createMutationObserverSync,
+        bindFeatureOptions,
     };
 })();

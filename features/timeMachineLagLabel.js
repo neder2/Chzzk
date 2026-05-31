@@ -52,6 +52,7 @@
     ];
 
     const {
+        bindFeatureOptions,
         createThrottledDomSync,
         getMainVideoElement,
         mutationMatchesSelector,
@@ -786,8 +787,7 @@
         scheduleSync();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     onReady(() => {
         if (isFeatureEnabled()) installRuntime();

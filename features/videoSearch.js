@@ -45,8 +45,12 @@
     let activeCommentAbortController = null;
     let runtimeInstalled = false;
     let routeListenersInstalled = false;
+    let removePageChangeDetection = null;
     let commentTooltipListenersInstalled = false;
     const {
+        bindFeatureOptions,
+        createMutationObserverSync,
+        fetchJson,
         isLastPage: isLastPageResponse,
         normSpace,
         normalizeCompact: normalize,
@@ -54,6 +58,7 @@
         pickArray,
         setLoadingReason,
         sleep,
+        startPageChangeDetection,
     } = BetterChzzk.utils;
 
     function isFeatureEnabled() {
@@ -494,13 +499,10 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
 
     async function fetchPage(channelId, page, signal = undefined) {
         const url = `${API_BASE}/${encodeURIComponent(channelId)}/videos?sortType=LATEST&pagingType=PAGE&page=${page}&size=${PAGE_SIZE}`;
-        const res = await fetch(url, {
-            credentials: "include",
+        return fetchJson(url, {
             headers: { Accept: "application/json" },
             signal,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
     }
 
     async function fetchCommentPage(videoNo, offset, signal = undefined) {
@@ -511,8 +513,7 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
             pagingType: "PAGE",
         });
         const url = `${COMMENT_API_BASE}/type/STREAMING_VIDEO/id/${encodeURIComponent(videoNo)}/comments?${params.toString()}`;
-        const res = await fetch(url, {
-            credentials: "include",
+        const json = await fetchJson(url, {
             headers: {
                 Accept: "application/json",
                 "Cache-Control": "no-cache",
@@ -524,8 +525,6 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
             },
             signal,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
         if (json?.code && json.code !== 200) throw new Error(json.message || `code ${json.code}`);
         return json?.content || null;
     }
@@ -2205,22 +2204,28 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
 
     function startObserver() {
         if (observer) return;
-        observer = new MutationObserver((mutations) => {
-            const urlChanged = location.href !== lastUrl;
-            if (urlChanged) {
-                lastUrl = location.href;
-                const newChannel = getChannelIdFromUrl();
-                if (newChannel !== currentChannelId) removeBar();
-            }
-            if (!isFeatureEnabled() || !isVideosTab()) {
-                if (urlChanged) removeBarIfMounted();
-                return;
-            }
-            if (!urlChanged && mutations.every(isOurMutation)) return;
-            schedule();
+        let urlChanged = false;
+        observer = createMutationObserverSync({
+            target: () => document.body || document.documentElement,
+            options: { childList: true, subtree: true },
+            onMutations: () => {
+                urlChanged = location.href !== lastUrl;
+                if (urlChanged) {
+                    lastUrl = location.href;
+                    const newChannel = getChannelIdFromUrl();
+                    if (newChannel !== currentChannelId) removeBar();
+                }
+            },
+            shouldIgnoreMutations: (mutations) => !urlChanged && mutations.every(isOurMutation),
+            shouldSchedule: () => {
+                if (!isFeatureEnabled() || !isVideosTab()) {
+                    if (urlChanged) removeBarIfMounted();
+                    return false;
+                }
+                return true;
+            },
+            schedule,
         });
-        const target = document.body || document.documentElement;
-        observer.observe(target, { childList: true, subtree: true });
     }
 
     function removeCommentSurfaces() {
@@ -2237,15 +2242,16 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
     function installRouteListeners() {
         if (routeListenersInstalled) return;
         routeListenersInstalled = true;
-        window.addEventListener("popstate", schedule, true);
-        window.addEventListener("hashchange", schedule, true);
+        removePageChangeDetection = startPageChangeDetection(schedule);
     }
 
     function uninstallRouteListeners() {
         if (!routeListenersInstalled) return;
         routeListenersInstalled = false;
-        window.removeEventListener("popstate", schedule, true);
-        window.removeEventListener("hashchange", schedule, true);
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
     }
 
     function installRuntime() {
@@ -2336,8 +2342,7 @@ body[theme="dark"] .bcvs-comment-tooltip-line[data-hit="1"],
         schedule();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     onReady(() => {
         if (isFeatureEnabled()) installRuntime();

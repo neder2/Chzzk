@@ -1,0 +1,110 @@
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
+const test = require("node:test");
+
+require("../shared/settings.js");
+
+const settings = globalThis.BetterChzzkSettings;
+
+const expectedDefaults = {
+    autoQualityEnabled: true,
+    skipControlEnabled: true,
+    skipKeyboardEnabled: true,
+    skipPillEnabled: true,
+    skipLivePillEnabled: true,
+    skipLivePauseResumeEnabled: true,
+    skipSeconds: 5,
+    skipWheelStep: 1,
+    skipWheelShiftStep: 5,
+    skipWheelAltStep: 10,
+    vodBroadcastClockEnabled: true,
+    timeMachineLagLabelEnabled: true,
+    vodReplayChatFixEnabled: true,
+    adblockPopupEnabled: true,
+    monthlyBroadcastTimeEnabled: true,
+    monthlyBroadcastTimeWindowDays: 30,
+    monthlyBroadcastTimeMaxPages: 12,
+    monthlyBroadcastTimeCalendarEnabled: true,
+    monthlyBroadcastTimeMaxCalendarPages: 60,
+    liveWatchHistoryEnabled: true,
+    liveWatchHistoryMinMinutes: 1,
+    videoSearchEnabled: true,
+    videoSearchCommentEnabled: true,
+    videoSearchMaxPages: 80,
+    videoSearchRenderBatchSize: 80,
+    videoSearchCommentDelayMs: 1000,
+    videoSearchCommentMaxVideos: 60,
+    videoSearchCommentMaxPagesPerVideo: 1,
+    categoryToolsEnabled: true,
+    categoryToolsMaxMetadataPages: 12,
+    categoryToolsHideGlobalTagSearch: true,
+    categoryToolsFollowerBadgesEnabled: true,
+    categoryToolsLiveElapsedEnabled: true,
+    categoryToolsFollowerFilterPreset1: 1000,
+    categoryToolsFollowerFilterPreset2: 5000,
+    categoryToolsFollowerFilterPreset3: 10000,
+    categoryToolsFollowerFilterPreset4: 30000,
+    categoryToolsFollowerFilterPreset5: 50000,
+    categoryToolsFollowerFilterPreset6: 100000,
+    categoryToolsViewFilterPreset1: 100,
+    categoryToolsViewFilterPreset2: 500,
+    categoryToolsViewFilterPreset3: 1000,
+    categoryToolsViewFilterPreset4: 3000,
+    categoryToolsViewFilterPreset5: 5000,
+    categoryToolsViewFilterPreset6: 10000,
+    categoryToolsFollowerFetchMaxPerPass: 6,
+    categoryToolsFollowerFetchConcurrency: 2,
+    categoryToolsFollowerFetchDelayMs: 700,
+};
+
+test("settings exports the expected option defaults and key order", () => {
+    assert.deepEqual(settings.DEFAULT_OPTIONS, expectedDefaults);
+    assert.deepEqual(settings.OPTION_KEYS, Object.keys(expectedDefaults));
+});
+
+test("feature count keys are derived from feature toggles only", () => {
+    assert.deepEqual(settings.FEATURE_KEYS, [
+        "autoQualityEnabled",
+        "skipControlEnabled",
+        "vodBroadcastClockEnabled",
+        "timeMachineLagLabelEnabled",
+        "vodReplayChatFixEnabled",
+        "adblockPopupEnabled",
+        "monthlyBroadcastTimeEnabled",
+        "liveWatchHistoryEnabled",
+        "videoSearchEnabled",
+        "categoryToolsEnabled",
+    ]);
+});
+
+test("normalizeOptions preserves boolean parsing and integer bounds", () => {
+    const normalized = settings.normalizeOptions({
+        autoQualityEnabled: "false",
+        skipSeconds: -1,
+        skipWheelStep: 999,
+        skipWheelShiftStep: "2.4",
+        monthlyBroadcastTimeMaxCalendarPages: 9999,
+        videoSearchCommentDelayMs: -2,
+        categoryToolsFollowerFilterPreset1: "50000000",
+        categoryToolsFollowerFetchConcurrency: "0",
+    });
+
+    assert.equal(normalized.autoQualityEnabled, false);
+    assert.equal(normalized.skipSeconds, settings.DEFAULT_SKIP_SECONDS);
+    assert.equal(normalized.skipWheelStep, 60);
+    assert.equal(normalized.skipWheelShiftStep, 2);
+    assert.equal(normalized.monthlyBroadcastTimeMaxCalendarPages, settings.MONTHLY_CALENDAR_MAX_PAGES);
+    assert.equal(normalized.videoSearchCommentDelayMs, 0);
+    assert.equal(normalized.categoryToolsFollowerFilterPreset1, 10000000);
+    assert.equal(normalized.categoryToolsFollowerFetchConcurrency, 1);
+});
+
+test("options.html data-option keys match the settings keys", () => {
+    const html = fs.readFileSync(path.join(__dirname, "..", "options.html"), "utf8");
+    const dataOptionKeys = Array.from(html.matchAll(/data-option="([^"]+)"/g), (match) => match[1]);
+    const uniqueDataOptionKeys = Array.from(new Set(dataOptionKeys));
+
+    assert.equal(dataOptionKeys.length, uniqueDataOptionKeys.length);
+    assert.deepEqual(uniqueDataOptionKeys.sort(), [...settings.OPTION_KEYS].sort());
+});

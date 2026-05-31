@@ -61,7 +61,9 @@
         if (Date.now() - mark <= RELOAD_MARK_TTL_MS) return true;
         try {
             sessionStorage.removeItem(getReloadKey());
-        } catch (_) {}
+        } catch (_) {
+            // Ignore storage cleanup failures; the stale mark naturally expires.
+        }
         return false;
     }
 
