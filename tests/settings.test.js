@@ -18,7 +18,7 @@ const expectedDefaults = {
     skipWheelStep: 1,
     skipWheelShiftStep: 5,
     skipWheelAltStep: 10,
-    vodBroadcastClockEnabled: true,
+    vodBroadcastClockEnabled: false,
     timeMachineLagLabelEnabled: true,
     vodReplayChatFixEnabled: true,
     adblockPopupEnabled: true,

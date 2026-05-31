@@ -97,7 +97,7 @@
     const scheduleSync = createThrottledDomSync(syncVodBroadcastClock, DOM_SYNC_THROTTLE_MS);
 
     function isClockEnabled() {
-        return featureOptions.vodBroadcastClockEnabled !== false;
+        return featureOptions.vodBroadcastClockEnabled === true;
     }
 
     function isTitleHistoryEnabled() {
@@ -1380,6 +1380,11 @@
         attachVideoListeners(video);
 
         if (!isVideoUsable(video)) {
+            removeClock();
+            return;
+        }
+
+        if (!Number.isFinite(currentStartMs)) {
             removeClock();
             return;
         }
