@@ -77,7 +77,12 @@
     let pageChangeTimer = 0;
     let lastUrl = location.href;
     let domObserver = null;
+    let bodyObserver = null;
     let domObserverMode = "";
+    let removePageChangeDetection = null;
+    let runtimeInstalled = false;
+    let lifecycleListenersInstalled = false;
+    let startupSyncTimer = 0;
     const originalTextByNode = new WeakMap();
 
     const scheduleSync = createThrottledDomSync(syncTimeMachineLagText, DOM_SYNC_THROTTLE_MS);
@@ -629,6 +634,17 @@
         }, PAGE_CHANGE_DELAY_MS);
     }
 
+    function clearRuntimeTimers() {
+        if (pageChangeTimer) {
+            clearTimeout(pageChangeTimer);
+            pageChangeTimer = 0;
+        }
+        if (startupSyncTimer) {
+            clearTimeout(startupSyncTimer);
+            startupSyncTimer = 0;
+        }
+    }
+
     function mutationCouldAffectText(mutation) {
         if (mutation.type === "characterData") {
             return Boolean(mutation.target?.parentElement?.closest?.(LIVE_EDGE_TARGET_SELECTOR));
@@ -654,14 +670,27 @@
             return;
         }
 
-        const bodyObserver = new MutationObserver(() => {
+        bodyObserver = new MutationObserver(() => {
             if (!document.body) return;
             bodyObserver.disconnect();
+            bodyObserver = null;
             refreshDomObserverConfig();
             scheduleSync();
         });
 
         bodyObserver.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    function stopDomObserver() {
+        if (domObserver) {
+            domObserver.disconnect();
+            domObserver = null;
+            domObserverMode = "";
+        }
+        if (bodyObserver) {
+            bodyObserver.disconnect();
+            bodyObserver = null;
+        }
     }
 
     function getDomObserverConfig(mode) {
@@ -700,29 +729,67 @@
         syncTimeMachineLagText();
     }
 
-    function applyOptions(options) {
-        featureOptions = options;
-        refreshDomObserverConfig();
-        if (isFeatureEnabled()) {
-            startFallbackInterval();
-            scheduleSync();
-            return;
-        }
+    function installLifecycleListeners() {
+        if (lifecycleListenersInstalled) return;
+        lifecycleListenersInstalled = true;
+        document.addEventListener("visibilitychange", handleVisibilityChange, true);
+    }
 
+    function uninstallLifecycleListeners() {
+        if (!lifecycleListenersInstalled) return;
+        lifecycleListenersInstalled = false;
+        document.removeEventListener("visibilitychange", handleVisibilityChange, true);
+    }
+
+    function installRuntime() {
+        if (runtimeInstalled) return;
+        runtimeInstalled = true;
+        injectPatchStyleOnce();
+        if (!removePageChangeDetection) {
+            removePageChangeDetection = startPageChangeDetection(handlePageChange);
+        }
+        startDomObserver();
+        installLifecycleListeners();
+        startFallbackInterval();
+        scheduleSync();
+        if (!startupSyncTimer) {
+            startupSyncTimer = setTimeout(() => {
+                startupSyncTimer = 0;
+                scheduleSync();
+            }, 800);
+        }
+    }
+
+    function teardownRuntime() {
+        runtimeInstalled = false;
+        clearRuntimeTimers();
         stopFallbackInterval();
         restoreLiveText();
         detachVideoListeners();
+        stopDomObserver();
+        uninstallLifecycleListeners();
+        if (removePageChangeDetection) {
+            removePageChangeDetection();
+            removePageChangeDetection = null;
+        }
+    }
+
+    function applyOptions(options) {
+        featureOptions = options;
+        if (!isFeatureEnabled()) {
+            teardownRuntime();
+            return;
+        }
+
+        installRuntime();
+        refreshDomObserverConfig();
+        startFallbackInterval();
+        scheduleSync();
     }
 
     bindFeatureOptions(applyOptions);
 
     onReady(() => {
-        injectPatchStyleOnce();
-        startPageChangeDetection(handlePageChange);
-        startDomObserver();
-        document.addEventListener("visibilitychange", handleVisibilityChange, true);
-        startFallbackInterval();
-        scheduleSync();
-        setTimeout(scheduleSync, 800);
+        if (isFeatureEnabled()) installRuntime();
     });
 })();
