@@ -8,56 +8,98 @@
     const FILTER_PRESET_MIN = 1;
     const FILTER_PRESET_MAX = 10000000;
 
-    const DEFAULT_OPTIONS = Object.freeze({
-        autoQualityEnabled: true,
-        skipControlEnabled: true,
-        skipKeyboardEnabled: true,
-        skipPillEnabled: true,
-        skipLivePillEnabled: true,
-        skipLivePauseResumeEnabled: true,
-        skipSeconds: DEFAULT_SKIP_SECONDS,
-        skipWheelStep: 1,
-        skipWheelShiftStep: 5,
-        skipWheelAltStep: 10,
-        vodBroadcastClockEnabled: true,
-        timeMachineLagLabelEnabled: true,
-        adblockPopupEnabled: true,
-        monthlyBroadcastTimeEnabled: true,
-        monthlyBroadcastTimeWindowDays: 30,
-        monthlyBroadcastTimeMaxPages: 12,
-        monthlyBroadcastTimeCalendarEnabled: true,
-        monthlyBroadcastTimeMaxCalendarPages: 60,
-        liveWatchHistoryEnabled: true,
-        videoSearchEnabled: true,
-        videoSearchCommentEnabled: true,
-        videoSearchMaxPages: 80,
-        videoSearchRenderBatchSize: 80,
-        videoSearchCommentDelayMs: 1000,
-        videoSearchCommentMaxVideos: 60,
-        videoSearchCommentMaxPagesPerVideo: 1,
-        categoryToolsEnabled: true,
-        categoryToolsMaxMetadataPages: 12,
-        categoryToolsHideGlobalTagSearch: true,
-        categoryToolsFollowerBadgesEnabled: true,
-        categoryToolsLiveElapsedEnabled: true,
-        categoryToolsFollowerFilterPreset1: 1000,
-        categoryToolsFollowerFilterPreset2: 5000,
-        categoryToolsFollowerFilterPreset3: 10000,
-        categoryToolsFollowerFilterPreset4: 30000,
-        categoryToolsFollowerFilterPreset5: 50000,
-        categoryToolsFollowerFilterPreset6: 100000,
-        categoryToolsViewFilterPreset1: 100,
-        categoryToolsViewFilterPreset2: 500,
-        categoryToolsViewFilterPreset3: 1000,
-        categoryToolsViewFilterPreset4: 3000,
-        categoryToolsViewFilterPreset5: 5000,
-        categoryToolsViewFilterPreset6: 10000,
-        categoryToolsFollowerFetchMaxPerPass: 6,
-        categoryToolsFollowerFetchConcurrency: 2,
-        categoryToolsFollowerFetchDelayMs: 700,
+    const OPTION_SCHEMA = Object.freeze({
+        autoQualityEnabled: { kind: "bool", default: true, feature: true },
+        skipControlEnabled: { kind: "bool", default: true, feature: true },
+        skipKeyboardEnabled: { kind: "bool", default: true },
+        skipPillEnabled: { kind: "bool", default: true },
+        skipLivePillEnabled: { kind: "bool", default: true },
+        skipLivePauseResumeEnabled: { kind: "bool", default: true },
+        skipSeconds: { kind: "skipSeconds", default: DEFAULT_SKIP_SECONDS },
+        skipWheelStep: { kind: "int", default: 1, min: 1, max: 60 },
+        skipWheelShiftStep: { kind: "int", default: 5, min: 1, max: 300 },
+        skipWheelAltStep: { kind: "int", default: 10, min: 1, max: 600 },
+        vodBroadcastClockEnabled: { kind: "bool", default: true, feature: true },
+        timeMachineLagLabelEnabled: { kind: "bool", default: true, feature: true },
+        adblockPopupEnabled: { kind: "bool", default: true, feature: true },
+        monthlyBroadcastTimeEnabled: { kind: "bool", default: true, feature: true },
+        monthlyBroadcastTimeWindowDays: { kind: "int", default: 30, min: 1, max: 365 },
+        monthlyBroadcastTimeMaxPages: { kind: "int", default: 12, min: 1, max: 200 },
+        monthlyBroadcastTimeCalendarEnabled: { kind: "bool", default: true },
+        monthlyBroadcastTimeMaxCalendarPages: {
+            kind: "int",
+            default: 60,
+            min: MONTHLY_CALENDAR_MIN_PAGES,
+            max: MONTHLY_CALENDAR_MAX_PAGES,
+        },
+        liveWatchHistoryEnabled: { kind: "bool", default: true, feature: true },
+        videoSearchEnabled: { kind: "bool", default: true, feature: true },
+        videoSearchCommentEnabled: { kind: "bool", default: true },
+        videoSearchMaxPages: { kind: "int", default: 80, min: 1, max: 200 },
+        videoSearchRenderBatchSize: { kind: "int", default: 80, min: 10, max: 300 },
+        videoSearchCommentDelayMs: { kind: "int", default: 1000, min: 0, max: 5000 },
+        videoSearchCommentMaxVideos: { kind: "int", default: 60, min: 1, max: 200 },
+        videoSearchCommentMaxPagesPerVideo: { kind: "int", default: 1, min: 1, max: 3 },
+        categoryToolsEnabled: { kind: "bool", default: true, feature: true },
+        categoryToolsMaxMetadataPages: { kind: "int", default: 12, min: 1, max: 50 },
+        categoryToolsHideGlobalTagSearch: { kind: "bool", default: true },
+        categoryToolsFollowerBadgesEnabled: { kind: "bool", default: true },
+        categoryToolsLiveElapsedEnabled: { kind: "bool", default: true },
+        categoryToolsFollowerFilterPreset1: {
+            kind: "int",
+            default: 1000,
+            min: FILTER_PRESET_MIN,
+            max: FILTER_PRESET_MAX,
+        },
+        categoryToolsFollowerFilterPreset2: {
+            kind: "int",
+            default: 5000,
+            min: FILTER_PRESET_MIN,
+            max: FILTER_PRESET_MAX,
+        },
+        categoryToolsFollowerFilterPreset3: {
+            kind: "int",
+            default: 10000,
+            min: FILTER_PRESET_MIN,
+            max: FILTER_PRESET_MAX,
+        },
+        categoryToolsFollowerFilterPreset4: {
+            kind: "int",
+            default: 30000,
+            min: FILTER_PRESET_MIN,
+            max: FILTER_PRESET_MAX,
+        },
+        categoryToolsFollowerFilterPreset5: {
+            kind: "int",
+            default: 50000,
+            min: FILTER_PRESET_MIN,
+            max: FILTER_PRESET_MAX,
+        },
+        categoryToolsFollowerFilterPreset6: {
+            kind: "int",
+            default: 100000,
+            min: FILTER_PRESET_MIN,
+            max: FILTER_PRESET_MAX,
+        },
+        categoryToolsViewFilterPreset1: { kind: "int", default: 100, min: FILTER_PRESET_MIN, max: FILTER_PRESET_MAX },
+        categoryToolsViewFilterPreset2: { kind: "int", default: 500, min: FILTER_PRESET_MIN, max: FILTER_PRESET_MAX },
+        categoryToolsViewFilterPreset3: { kind: "int", default: 1000, min: FILTER_PRESET_MIN, max: FILTER_PRESET_MAX },
+        categoryToolsViewFilterPreset4: { kind: "int", default: 3000, min: FILTER_PRESET_MIN, max: FILTER_PRESET_MAX },
+        categoryToolsViewFilterPreset5: { kind: "int", default: 5000, min: FILTER_PRESET_MIN, max: FILTER_PRESET_MAX },
+        categoryToolsViewFilterPreset6: { kind: "int", default: 10000, min: FILTER_PRESET_MIN, max: FILTER_PRESET_MAX },
+        categoryToolsFollowerFetchMaxPerPass: { kind: "int", default: 6, min: 1, max: 50 },
+        categoryToolsFollowerFetchConcurrency: { kind: "int", default: 2, min: 1, max: 10 },
+        categoryToolsFollowerFetchDelayMs: { kind: "int", default: 700, min: 0, max: 5000 },
     });
 
-    const OPTION_KEYS = Object.freeze(Object.keys(DEFAULT_OPTIONS));
+    const OPTION_KEYS = Object.freeze(Object.keys(OPTION_SCHEMA));
+    const FEATURE_KEYS = Object.freeze(OPTION_KEYS.filter((key) => OPTION_SCHEMA[key].feature));
+    const DEFAULT_OPTIONS = Object.freeze(
+        OPTION_KEYS.reduce((out, key) => {
+            out[key] = OPTION_SCHEMA[key].default;
+            return out;
+        }, {})
+    );
     let cachedOptions = normalizeOptions();
     let optionsLoaded = false;
     let optionsLoading = false;
@@ -84,208 +126,23 @@
         return Math.min(Math.max(Math.round(parsed), SKIP_MIN), SKIP_MAX);
     }
 
+    function normalizeOptionValue(key, value) {
+        const spec = OPTION_SCHEMA[key];
+        const fallback = DEFAULT_OPTIONS[key];
+
+        if (spec.kind === "bool") return normalizeBoolean(value, fallback);
+        if (spec.kind === "int") return normalizeInteger(value, fallback, spec.min, spec.max);
+        if (spec.kind === "skipSeconds") return normalizeSkipSeconds(value);
+        return fallback;
+    }
+
     function normalizeOptions(value = {}) {
         const raw = value && typeof value === "object" ? value : {};
-        const out = { ...DEFAULT_OPTIONS };
+        const out = {};
 
-        out.autoQualityEnabled = normalizeBoolean(raw.autoQualityEnabled, DEFAULT_OPTIONS.autoQualityEnabled);
-        out.skipControlEnabled = normalizeBoolean(raw.skipControlEnabled, DEFAULT_OPTIONS.skipControlEnabled);
-        out.skipKeyboardEnabled = normalizeBoolean(raw.skipKeyboardEnabled, DEFAULT_OPTIONS.skipKeyboardEnabled);
-        out.skipPillEnabled = normalizeBoolean(raw.skipPillEnabled, DEFAULT_OPTIONS.skipPillEnabled);
-        out.skipLivePillEnabled = normalizeBoolean(
-            raw.skipLivePillEnabled,
-            DEFAULT_OPTIONS.skipLivePillEnabled
-        );
-        out.skipLivePauseResumeEnabled = normalizeBoolean(
-            raw.skipLivePauseResumeEnabled,
-            DEFAULT_OPTIONS.skipLivePauseResumeEnabled
-        );
-        out.skipSeconds = normalizeSkipSeconds(raw.skipSeconds);
-        out.skipWheelStep = normalizeInteger(raw.skipWheelStep, DEFAULT_OPTIONS.skipWheelStep, 1, 60);
-        out.skipWheelShiftStep = normalizeInteger(raw.skipWheelShiftStep, DEFAULT_OPTIONS.skipWheelShiftStep, 1, 300);
-        out.skipWheelAltStep = normalizeInteger(raw.skipWheelAltStep, DEFAULT_OPTIONS.skipWheelAltStep, 1, 600);
-        out.vodBroadcastClockEnabled = normalizeBoolean(
-            raw.vodBroadcastClockEnabled,
-            DEFAULT_OPTIONS.vodBroadcastClockEnabled
-        );
-        out.timeMachineLagLabelEnabled = normalizeBoolean(
-            raw.timeMachineLagLabelEnabled,
-            DEFAULT_OPTIONS.timeMachineLagLabelEnabled
-        );
-
-        out.adblockPopupEnabled = normalizeBoolean(raw.adblockPopupEnabled, DEFAULT_OPTIONS.adblockPopupEnabled);
-
-        out.monthlyBroadcastTimeEnabled = normalizeBoolean(
-            raw.monthlyBroadcastTimeEnabled,
-            DEFAULT_OPTIONS.monthlyBroadcastTimeEnabled
-        );
-        out.monthlyBroadcastTimeWindowDays = normalizeInteger(
-            raw.monthlyBroadcastTimeWindowDays,
-            DEFAULT_OPTIONS.monthlyBroadcastTimeWindowDays,
-            1,
-            365
-        );
-        out.monthlyBroadcastTimeMaxPages = normalizeInteger(
-            raw.monthlyBroadcastTimeMaxPages,
-            DEFAULT_OPTIONS.monthlyBroadcastTimeMaxPages,
-            1,
-            200
-        );
-        out.monthlyBroadcastTimeCalendarEnabled = normalizeBoolean(
-            raw.monthlyBroadcastTimeCalendarEnabled,
-            DEFAULT_OPTIONS.monthlyBroadcastTimeCalendarEnabled
-        );
-        out.monthlyBroadcastTimeMaxCalendarPages = normalizeInteger(
-            raw.monthlyBroadcastTimeMaxCalendarPages,
-            DEFAULT_OPTIONS.monthlyBroadcastTimeMaxCalendarPages,
-            MONTHLY_CALENDAR_MIN_PAGES,
-            MONTHLY_CALENDAR_MAX_PAGES
-        );
-        out.liveWatchHistoryEnabled = normalizeBoolean(
-            raw.liveWatchHistoryEnabled,
-            DEFAULT_OPTIONS.liveWatchHistoryEnabled
-        );
-
-        out.videoSearchEnabled = normalizeBoolean(raw.videoSearchEnabled, DEFAULT_OPTIONS.videoSearchEnabled);
-        out.videoSearchCommentEnabled = normalizeBoolean(
-            raw.videoSearchCommentEnabled,
-            DEFAULT_OPTIONS.videoSearchCommentEnabled
-        );
-        out.videoSearchMaxPages = normalizeInteger(raw.videoSearchMaxPages, DEFAULT_OPTIONS.videoSearchMaxPages, 1, 200);
-        out.videoSearchRenderBatchSize = normalizeInteger(
-            raw.videoSearchRenderBatchSize,
-            DEFAULT_OPTIONS.videoSearchRenderBatchSize,
-            10,
-            300
-        );
-        out.videoSearchCommentDelayMs = normalizeInteger(
-            raw.videoSearchCommentDelayMs,
-            DEFAULT_OPTIONS.videoSearchCommentDelayMs,
-            0,
-            5000
-        );
-        out.videoSearchCommentMaxVideos = normalizeInteger(
-            raw.videoSearchCommentMaxVideos,
-            DEFAULT_OPTIONS.videoSearchCommentMaxVideos,
-            1,
-            200
-        );
-        out.videoSearchCommentMaxPagesPerVideo = normalizeInteger(
-            raw.videoSearchCommentMaxPagesPerVideo,
-            DEFAULT_OPTIONS.videoSearchCommentMaxPagesPerVideo,
-            1,
-            3
-        );
-
-        out.categoryToolsEnabled = normalizeBoolean(raw.categoryToolsEnabled, DEFAULT_OPTIONS.categoryToolsEnabled);
-        out.categoryToolsMaxMetadataPages = normalizeInteger(
-            raw.categoryToolsMaxMetadataPages,
-            DEFAULT_OPTIONS.categoryToolsMaxMetadataPages,
-            1,
-            50
-        );
-        out.categoryToolsHideGlobalTagSearch = normalizeBoolean(
-            raw.categoryToolsHideGlobalTagSearch,
-            DEFAULT_OPTIONS.categoryToolsHideGlobalTagSearch
-        );
-        out.categoryToolsFollowerBadgesEnabled = normalizeBoolean(
-            raw.categoryToolsFollowerBadgesEnabled,
-            DEFAULT_OPTIONS.categoryToolsFollowerBadgesEnabled
-        );
-        out.categoryToolsLiveElapsedEnabled = normalizeBoolean(
-            raw.categoryToolsLiveElapsedEnabled,
-            DEFAULT_OPTIONS.categoryToolsLiveElapsedEnabled
-        );
-        out.categoryToolsFollowerFilterPreset1 = normalizeInteger(
-            raw.categoryToolsFollowerFilterPreset1,
-            DEFAULT_OPTIONS.categoryToolsFollowerFilterPreset1,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsFollowerFilterPreset2 = normalizeInteger(
-            raw.categoryToolsFollowerFilterPreset2,
-            DEFAULT_OPTIONS.categoryToolsFollowerFilterPreset2,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsFollowerFilterPreset3 = normalizeInteger(
-            raw.categoryToolsFollowerFilterPreset3,
-            DEFAULT_OPTIONS.categoryToolsFollowerFilterPreset3,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsFollowerFilterPreset4 = normalizeInteger(
-            raw.categoryToolsFollowerFilterPreset4,
-            DEFAULT_OPTIONS.categoryToolsFollowerFilterPreset4,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsFollowerFilterPreset5 = normalizeInteger(
-            raw.categoryToolsFollowerFilterPreset5,
-            DEFAULT_OPTIONS.categoryToolsFollowerFilterPreset5,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsFollowerFilterPreset6 = normalizeInteger(
-            raw.categoryToolsFollowerFilterPreset6,
-            DEFAULT_OPTIONS.categoryToolsFollowerFilterPreset6,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsViewFilterPreset1 = normalizeInteger(
-            raw.categoryToolsViewFilterPreset1,
-            DEFAULT_OPTIONS.categoryToolsViewFilterPreset1,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsViewFilterPreset2 = normalizeInteger(
-            raw.categoryToolsViewFilterPreset2,
-            DEFAULT_OPTIONS.categoryToolsViewFilterPreset2,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsViewFilterPreset3 = normalizeInteger(
-            raw.categoryToolsViewFilterPreset3,
-            DEFAULT_OPTIONS.categoryToolsViewFilterPreset3,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsViewFilterPreset4 = normalizeInteger(
-            raw.categoryToolsViewFilterPreset4,
-            DEFAULT_OPTIONS.categoryToolsViewFilterPreset4,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsViewFilterPreset5 = normalizeInteger(
-            raw.categoryToolsViewFilterPreset5,
-            DEFAULT_OPTIONS.categoryToolsViewFilterPreset5,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsViewFilterPreset6 = normalizeInteger(
-            raw.categoryToolsViewFilterPreset6,
-            DEFAULT_OPTIONS.categoryToolsViewFilterPreset6,
-            FILTER_PRESET_MIN,
-            FILTER_PRESET_MAX
-        );
-        out.categoryToolsFollowerFetchMaxPerPass = normalizeInteger(
-            raw.categoryToolsFollowerFetchMaxPerPass,
-            DEFAULT_OPTIONS.categoryToolsFollowerFetchMaxPerPass,
-            1,
-            50
-        );
-        out.categoryToolsFollowerFetchConcurrency = normalizeInteger(
-            raw.categoryToolsFollowerFetchConcurrency,
-            DEFAULT_OPTIONS.categoryToolsFollowerFetchConcurrency,
-            1,
-            10
-        );
-        out.categoryToolsFollowerFetchDelayMs = normalizeInteger(
-            raw.categoryToolsFollowerFetchDelayMs,
-            DEFAULT_OPTIONS.categoryToolsFollowerFetchDelayMs,
-            0,
-            5000
-        );
+        for (const key of OPTION_KEYS) {
+            out[key] = normalizeOptionValue(key, raw[key]);
+        }
 
         return out;
     }
@@ -355,6 +212,7 @@
         MONTHLY_CALENDAR_MAX_PAGES,
         DEFAULT_OPTIONS,
         OPTION_KEYS,
+        FEATURE_KEYS,
         normalizeSkipSeconds,
         normalizeOptions,
         getOptions,

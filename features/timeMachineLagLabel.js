@@ -52,6 +52,7 @@
     ];
 
     const {
+        bindFeatureOptions,
         createThrottledDomSync,
         getMainVideoElement,
         mutationMatchesSelector,
@@ -713,8 +714,7 @@
         detachVideoListeners();
     }
 
-    BetterChzzkSettings.getOptions(applyOptions);
-    BetterChzzkSettings.addOptionsChangeListener(applyOptions);
+    bindFeatureOptions(applyOptions);
 
     onReady(() => {
         injectPatchStyleOnce();
